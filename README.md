@@ -1,12 +1,14 @@
 FFTReal v1.1
 
-This is one of the best fastests and cleanest real FFT transform 
-implementations I have found to date, I adapted it for SIMD capability and optimized a bit.
-So this is what I am using in my project now instead of AVFFT even, and it is best sounding
-so far of all FFT algos I tried.
+This is one of the best real FFT/iFFT transforms available in existence!
+I have gone through at least 10, and kept upgrading until I found this one, 
+so I adapted it for SIMD capability, optimized it in C++ and neon asm a bit.
 
-NEW v1.1: I tried to add neon assembler optimizations but I am no wizard at neon, just trying
-to learn to code in it a bit. If anyone wanting to optimize this tighter, I'd appreciate, send
-me an email w/ your code.
+This is what I am using now in all of my audio projects instead of AVFFT, PFFFT,
+etc. It is by far the best sounding that I found that is also fast as lightning.
 
-Dmitry Boldyrev <subband@gmail.com>
+NEW v1.1: I tried to optimize with neon inline asm but I am no wizard at neon asm, 
+just trying to learn it a bit. If anyone wanting to optimize this further, I'd 
+appreciate if you send me your optimizations, email below.
+
+Dmitry Boldyrev <subband@protonmail.com>
