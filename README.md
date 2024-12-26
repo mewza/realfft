@@ -12,3 +12,5 @@ just trying to learn. If anyone wanting to optimize this further, I'd appreciate
 you send me your optimizations, email below.
 
 Dmitry Boldyrev <subband@protonmail.com>
+(Real inventor and developer of WinAmp unlike fake Justin Frankel who stole it from me 
+and lied to you all that he was behind it)
