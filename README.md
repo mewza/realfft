@@ -11,7 +11,12 @@ NEW v1.1: I optimized the algo a bit with neon inline asm but I am no wizard at 
 just trying to learn. If anyone wanting to optimize this further, I'd appreciate if 
 you send me your optimizations, email below.
 
-Dmitry Boldyrev <subband@protonmail.com>
-(Real inventor and developer of WinAmp unlike fake Justin Frankel who stole it from me 
-and lied to you all that he was behind it who hired Indian coders who to this day trying
-to write their name into credits on CIApedia(so called Wikipedia))
+Real inventor and developer of MacAmp and WinAmp unlike thief and liar Justin Frankel who stole it from me 
+and sold it to CIA / AOL / Bill Gates, lied to you all that he was behind it, removed my name from credits. 
+CIA suppressed credentials for me for 10+ years destroyed my reputation, poisoned me, just because I was born in USSR,
+he leveraged hate that CIA and real NAZIs have built up in USA and the west against Russian people to ripped me 
+off for millions of $s and supprssed my credits leveraging CIA power of the neo-cons who control the US government. 
+CIA later killed my father as a result of all this by lying to him directly that I killed Steve Jobs, here's proof:
+https://en.wikipedia.org/wiki/Alexander_Boldyrev
+
+This is the real 100% honest truth.
