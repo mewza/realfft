@@ -9,6 +9,8 @@
 //        the current optimizations are only give you surface level of what is possible
 
 #pragma once
+
+#include <memory>
 #include <mss/const1.h>
 
 #if TARGET_OS_MACCATALYST && TARGET_CPU_ARM64
@@ -19,44 +21,92 @@
 #undef USE_NEON
 #endif
 
-// Available for purchase $200/app license (contact me directly)
 #define NEW_NEON_OPT
 
-template <typename T, int max_N>
+template <typename T>
 class FFTReal
 {
     using T1 = SimdBase<T>;
+    
+    int _nbr_bits = 0;
+    int _N2 = 0;
+    int _N = 0;
     
     static constexpr unsigned floorlog2(unsigned x) {
         return (x == 1) ? 0 : 1 + floorlog2(x >> 1);
     }
     
-    static constexpr int max_nbr_bits = floorlog2( max_N );
-    static constexpr int max_N2 = max_N/2;
-    
-    int nbr_bits = max_nbr_bits;
-    int N = max_N;
-    int N2 = max_N2;
-    
 protected:
-    
-    alignas(64) T   buffer_ptr[ (max_N + 1) * 2 ];
-    alignas(64) T   yy[ (max_N + 1) * 2 ];
-    alignas(64) T   xx[ max_N ];
+    // Change fixed arrays to pointers
+    T* buffer_ptr = nullptr;
+    T* yy = nullptr;
+    T* xx = nullptr;
     
 public:
-    FFTReal(const int inN = max_N) :
-         N(inN),
-         N2(inN/2),
-         nbr_bits(floorlog2( inN )),
-        _trigo_lut(this),
-        _bit_rev_lut(this),
-        _twiddle_cache(this)
+    FFTReal(const int n) :
+    _N(n),
+    _N2(n/2),
+    _nbr_bits(floorlog2(n))
     {
-        if (inN > max_N) {
-            throw std::runtime_error("FFTReal: inN > max_N!!\n");
-        }
+        buffer_ptr = alignedAlloc<T>((n + 1) * 2);
+        yy = alignedAlloc<T>((n + 1) * 2);
+        xx = alignedAlloc<T>(n);
+        
+        _trigo_lut = std::make_unique<trigo_lookup>(_nbr_bits);
+        _bit_rev_lut = std::make_unique<bit_rev_lut>(_nbr_bits, _N);
+        _twiddle_cache = std::make_unique<twiddle_cache>(_nbr_bits, _N2);
     }
+    
+    ~FFTReal() {
+        alignedFree(buffer_ptr);
+        alignedFree(yy);
+        alignedFree(xx);
+    }
+    
+    FFTReal(FFTReal&& other) noexcept :
+        _nbr_bits(other._nbr_bits),
+        _N2(other._N2),
+        _N(other._N),
+        buffer_ptr(other.buffer_ptr),
+        yy(other.yy),
+        xx(other.xx),
+        _trigo_lut(std::move(other._trigo_lut)),
+        _bit_rev_lut(std::move(other._bit_rev_lut)),
+        _twiddle_cache(std::move(other._twiddle_cache))
+    {
+        other.buffer_ptr = nullptr;
+        other.yy = nullptr;
+        other.xx = nullptr;
+    }
+    
+    // Implement move assignment
+    FFTReal& operator=(FFTReal&& other) noexcept {
+        if (this != &other) {
+            alignedFree(buffer_ptr);
+            alignedFree(yy);
+            alignedFree(xx);
+            
+            _nbr_bits = other._nbr_bits;
+            _N2 = other._N2;
+            _N = other._N;
+            buffer_ptr = other.buffer_ptr;
+            yy = other.yy;
+            xx = other.xx;
+            _trigo_lut = std::move(other._trigo_lut);
+            _bit_rev_lut = std::move(other._bit_rev_lut);
+            _twiddle_cache = std::move(other._twiddle_cache);
+            
+            other.buffer_ptr = nullptr;
+            other.yy = nullptr;
+            other.xx = nullptr;
+        }
+        return *this;
+    }
+    
+    // Delete copy constructor and assignment to avoid double-free issues
+    FFTReal(const FFTReal&) = delete;
+    FFTReal& operator=(const FFTReal&) = delete;
+   
     
     // ========================================================================== //
     //      Description: Compute the real FFT of the array.                       //
@@ -75,11 +125,11 @@ public:
         cmplxT<T> c;
         if (do_scale) {
             const T mul = 0.5;
-            for (int i=0; i < N; i++) {
+            for (int i=0; i < _N; i++) {
                 xx[i] = x[i] * mul;
             }
         } else {
-            memcpy(xx, x, N * sizeof(T));
+            memcpy(xx, x, _N * sizeof(T));
         }
 #ifdef USE_NEON
         if constexpr( std::is_same_v<T, simd_double8> ) {
@@ -91,11 +141,11 @@ public:
 #else
         do_fft(xx, yy);
 #endif
-        if (do_scale) mul *= 1./(T1)N;
+        if (do_scale) mul *= 1./(T1)_N;
         
         y[0] = cmplxT<T>(yy[0], 0.0) * mul;
-        for (int i=1; i < N2; i++) {
-            y[i] = cmplxT<T>(yy[i], yy[i + N2]) * mul;
+        for (int i=1; i < _N2; i++) {
+            y[i] = cmplxT<T>(yy[i], yy[i + _N2]) * mul;
         }
     }
     
@@ -114,12 +164,12 @@ public:
     
     void real_ifft(const cmplxT<T>* x, T* y, bool do_scale = false)
     {
-        for (int i=1; i < N2; i++) {
-            yy[ i      ] = x[i].re;
-            yy[ i + N2 ] = x[i].im;
+        for (int i=1; i < _N2; i++) {
+            yy[ i       ] = x[i].re;
+            yy[ i + _N2 ] = x[i].im;
         }
-        yy[  0 ] = x[0].re;
-        yy[ N2 ] = 0.0;
+        yy[   0 ] = x[0].re;
+        yy[ _N2 ] = 0.0;
         
 #ifdef USE_NEON
         if constexpr( std::is_same_v<T, simd_double8> ) {
@@ -136,9 +186,9 @@ public:
     void do_fft(const T *x, T *f)
     {
         T c, s;
-        if (nbr_bits > 2) {
+        if (_nbr_bits > 2) {
             T *sf, *df;
-            if (nbr_bits & 1) {
+            if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 sf = f;
             } else {
@@ -148,8 +198,8 @@ public:
             
             //  First and second pass at once
             
-            auto lut_ptr = _bit_rev_lut.get_ptr();
-            for (auto i = 0; i < N; i += 4)
+            auto lut_ptr = _bit_rev_lut->get_ptr();
+            for (auto i = 0; i < _N; i += 4)
             {
                 auto df2 = &df [i];
                 auto lut = &lut_ptr [i];
@@ -167,7 +217,7 @@ public:
             
             //  Third pass
             
-            for (auto i = 0; i < N; i += 8)
+            for (auto i = 0; i < _N; i += 8)
             {
                 auto sf2 = &sf [i];
                 auto df2 = &df [i];
@@ -188,7 +238,7 @@ public:
             
             //  Next pass
             
-            for (auto pass = 3; pass < nbr_bits; ++pass)
+            for (auto pass = 3; pass < _nbr_bits; ++pass)
             {
                 auto nbr_coef = 1 << pass;
                 auto h_nbr_coef = nbr_coef >> 1;
@@ -197,7 +247,7 @@ public:
                 // No longer using _trigo_lut directly
                 // auto cos_ptr = _trigo_lut.get_ptr(pass);
                 
-                for (auto i = 0; i < N; i += d_nbr_coef)
+                for (auto i = 0; i < _N; i += d_nbr_coef)
                 {
                     auto sf1r = sf + i;
                     auto sf2r = sf1r + nbr_coef;
@@ -222,7 +272,7 @@ public:
                         // const T1 c = cos_ptr [j];                // cos (i*PI/nbr_coef);
                         // const T1 s = cos_ptr [h_nbr_coef - j];   // sin (i*PI/nbr_coef);
                         
-                        _twiddle_cache.get_twiddle(pass, j, c, s);
+                        _twiddle_cache->get_twiddle(pass, j, c, s);
                         
                         T v = sf2r [j] * c - sf2i [j] * s;
                         dfr [ j] = sf1r [j] + v;
@@ -244,7 +294,7 @@ public:
         //  -- Special cases --
         
         //  4-point FFT
-        else if (nbr_bits == 2) {
+        else if (_nbr_bits == 2) {
             f[1] = x[0] - x[2];
             f[3] = x[1] - x[3];
             
@@ -255,7 +305,7 @@ public:
             f[2] = b_0 - b_2;
         }
         //  2-point FFT
-        else if (nbr_bits == 1) {
+        else if (_nbr_bits == 1) {
             f[0] = x[0] + x[1];
             f[1] = x[0] - x[1];
         }
@@ -271,17 +321,17 @@ public:
         const T1 c2 = 2.0;
         
         T1 mul = 1.;
-        if (do_scale) mul *= 1./(T1)N;
+        if (do_scale) mul *= 1./(T1)_N;
         
         //  General case
         
-        if (nbr_bits > 2)
+        if (_nbr_bits > 2)
         {
             T * sf = (T*) f;
             T * df;
             T * df_temp;
             
-            if (nbr_bits & 1) {
+            if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 df_temp = x;
             } else {
@@ -293,7 +343,7 @@ public:
             
             // First pass
             
-            for (auto pass = nbr_bits - 1; pass >= 3; --pass)
+            for (auto pass = _nbr_bits - 1; pass >= 3; --pass)
             {
                 auto nbr_coef = 1 << pass;
                 auto h_nbr_coef = nbr_coef >> 1;
@@ -302,7 +352,7 @@ public:
                 // No longer using _trigo_lut directly
                 // auto cos_ptr = _trigo_lut.get_ptr (pass);
                 
-                for (auto i = 0; i < N; i += d_nbr_coef)
+                for (auto i = 0; i < _N; i += d_nbr_coef)
                 {
                     auto sfr = &sf [i];
                     auto sfi = &sfr [nbr_coef];
@@ -330,7 +380,7 @@ public:
                         // auto c = cos_ptr [j];
                         // auto s = cos_ptr [h_nbr_coef - j];
                         
-                        _twiddle_cache.get_twiddle(pass, j, c, s);
+                        _twiddle_cache->get_twiddle(pass, j, c, s);
                         
                         auto vr = sfr [j] - sfi [-j];           // - sfr [nbr_coef - j];
                         auto vi = sfi [j] + sfi [nbr_coef - j];
@@ -341,7 +391,7 @@ public:
                 }
                 
                 // Prepare to the next pass
-                if (pass < nbr_bits - 1) {
+                if (pass < _nbr_bits - 1) {
                     auto tmp = df;
                     df = sf;
                     sf = tmp;
@@ -353,7 +403,7 @@ public:
             
             // Antepenultimate pass
             const T sq2_2 = SQ2_2;
-            for (auto i = 0; i < N; i += 8)
+            for (auto i = 0; i < _N; i += 8)
             {
                 auto df2 = &df [i];
                 auto sf2 = &sf [i];
@@ -372,9 +422,8 @@ public:
             }
             
             // Penultimate and last pass at once
-            auto lut_ptr = _bit_rev_lut.get_ptr();
-            
-            for (auto i = 0; i < N; i += 8)
+            auto lut_ptr = _bit_rev_lut->get_ptr();
+            for (auto i = 0; i < _N; i += 8)
             {
                 auto lut = lut_ptr + i;
                 auto sf2 = &df[i];
@@ -405,7 +454,7 @@ public:
         //   Special cases
         
         // 4-point IFFT
-        else if (nbr_bits == 2) {
+        else if (_nbr_bits == 2) {
             const T b_0 = f[0] + f[2];
             const T b_2 = f[0] - f[2];
             x[0] = (b_0 + f[1] * c2) * mul;
@@ -414,7 +463,7 @@ public:
             x[3] = (b_2 - f[3] * c2) * mul;
         }
         // 2-point IFFT
-        else if (nbr_bits == 1) {
+        else if (_nbr_bits == 1) {
             x[0] = (f[0] + f[1]) * mul;
             x[1] = (f[0] - f[1]) * mul;
         }
@@ -425,41 +474,66 @@ public:
     }
     
     inline void do_rescale(T *x) const {
-        const T1 mul = 1./(T1)N;
-        for (auto i = 0; i < N; ++i)
+        const T1 mul = 1./(T1)_N;
+        for (auto i = 0; i < _N; ++i)
             x[i] *= mul;
     }
     
     inline void do_rescale(cmplxT<T> *x) const {
-        const T mul = 1./(T1)N;
+        const T mul = 1./(T1)_N;
         x[0] = cmplxT<T>(x[0].re, 0.0) * mul;
-        for (auto i = 1; i < N2; ++i)
+        for (auto i = 1; i < _N2; ++i)
             x[i] *= mul;
+    }
+    
+    template <typename U>
+    static U* alignedAlloc(size_t size) {
+        void* ptr = nullptr;
+#ifdef _WIN32
+        ptr = _aligned_malloc(size * sizeof(U), 64);
+#else
+        posix_memalign(&ptr, 64, size * sizeof(U));
+#endif
+        return static_cast<U*>(ptr);
+    }
+    
+    // Helper function for aligned deallocation
+    static void alignedFree(void* ptr) {
+        if (ptr) {
+#ifdef _WIN32
+            _aligned_free(ptr);
+#else
+            free(ptr);
+#endif
+        }
     }
     
 protected:
     
     class trigo_lookup {
     protected:
-        FFTReal *owner;
-        // Fixed-size arrays for storing twiddle factors
-        alignas(64) T1  cos_data[max_N];
-        alignas(64) int offsets[max_nbr_bits + 1];
-       
+        int* offsets = nullptr;
+        T1* cos_data = nullptr;
+        int nbr_bits = 0;
     public:
-        trigo_lookup(FFTReal *_owner): owner(_owner) {
+        trigo_lookup(int bits) : nbr_bits(bits) {
             int total_coef = 0;
             
-            // Calculate offsets for each pass
-            for (int pass = 0; pass < owner->nbr_bits; pass++) {
+            // Allocate with alignment
+            offsets = FFTReal::alignedAlloc<int>(nbr_bits + 1);
+            
+            // Calculate total size needed
+            for (int pass = 0; pass < nbr_bits; pass++) {
                 offsets[pass] = total_coef;
                 int nbr_coef = 1 << pass;
-                total_coef += nbr_coef;  // Store full table for each pass
+                total_coef += nbr_coef;
             }
-            offsets[owner->nbr_bits] = total_coef;  // End marker
+            offsets[nbr_bits] = total_coef;
+            
+            cos_data = FFTReal::alignedAlloc<T1>(total_coef);
             
             // Calculate and store trig values in flat array
-            for (int pass = 0; pass < owner->nbr_bits; pass++) {
+            for (int pass = 0; pass < nbr_bits; pass++) {
                 int nbr_coef = 1 << pass;
                 int offset = offsets[pass];
                 
@@ -470,49 +544,120 @@ protected:
             }
         }
         
+        ~trigo_lookup() {
+            FFTReal::alignedFree(offsets);
+            FFTReal::alignedFree(cos_data);
+        }
+        
+        
         // Get pointer to the cosine values for a specific pass
         inline const T1* get_ptr(int pass) const {
-            return &cos_data[offsets[pass]];
+            return &cos_data[ offsets[pass] ];
         }
+        
+        trigo_lookup(trigo_lookup&& other) noexcept :
+            nbr_bits(other.nbr_bits),
+            offsets(other.offsets),
+            cos_data(other.cos_data)
+        {
+            other.nbr_bits = 0;
+            other.offsets = nullptr;
+            other.cos_data = nullptr;
+        }
+        
+        // Implement move assignment
+        trigo_lookup& operator=(trigo_lookup&& other) noexcept {
+            if (this != &other) {
+                alignedFree(offsets);
+                alignedFree(cos_data);
+                
+                nbr_bits = other.nbr_bits;
+                offsets = std::move(other.offsets);
+                cos_data = std::move(other.cos_data);
+                
+                nbr_bits = 0;
+                other.offsets = nullptr;
+                other.cos_data = nullptr;
+            }
+            return *this;
+        }
+        
+        // Delete copy constructor and assignment to avoid double-free issues
+        trigo_lookup(const trigo_lookup&) = delete;
+        trigo_lookup& operator=(const trigo_lookup&) = delete;
     };
-    
-    // Bit-reversal lookup table for FFT without std::vector
-    template <typename S>
+
     class bit_rev_lut {
     protected:
-        FFTReal *owner;
-        // Fixed-size array for bit-reversed indices
-        alignas(64) S indices[max_N];
-        
+        int* indices = nullptr;
+        int N = 0;
+        int nbr_bits = 0;
     public:
-        // Constructor
-        bit_rev_lut(FFTReal *_owner) : owner(_owner) {
-            // Fill the table with bit-reversed indices
-            for (int i = 0; i < owner->N; i++) {
+        bit_rev_lut(int bits, int n) : nbr_bits(bits), N(n) {
+            indices = FFTReal::alignedAlloc<int>(N);
+            for (int i = 0; i < N; i++) {
                 int rev = 0;
-                for (int j = 0; j < owner->nbr_bits; j++) {
-                    if (i & (1 << j)) rev |= (1 << (owner->nbr_bits - 1 - j));
+                for (int j = 0; j < nbr_bits; j++) {
+                    if (i & (1 << j)) rev |= (1 << (nbr_bits - 1 - j));
                 }
                 indices[i] = rev;
             }
         }
-        // Get pointer to the bit-reversal table
-        inline const S* get_ptr() const {
+        inline const int* get_ptr() const {
             return indices;
         }
+        
+        bit_rev_lut(bit_rev_lut&& other) noexcept :
+            nbr_bits(other.nbr_bits),
+            N(other.N),
+            indices(std::move(other.indices))
+        {
+            other.nbr_bits = 0;
+            other.N = 0;
+            other.indices = nullptr;
+        }
+        
+        // Implement move assignment
+        bit_rev_lut& operator=(bit_rev_lut&& other) noexcept {
+            if (this != &other) {
+                alignedFree(indices);
+                
+                nbr_bits = other.nbr_bits;
+                N = other.N;
+                indices = std::move(other.indices);
+                
+                nbr_bits = 0;
+                N = 0;
+                other.indices = nullptr;
+            }
+            return *this;
+        }
+        
+        // Delete copy constructor and assignment to avoid double-free issues
+        bit_rev_lut(const bit_rev_lut&) = delete;
+        bit_rev_lut& operator=(const bit_rev_lut&) = delete;
+        
+        ~bit_rev_lut() {
+            FFTReal::alignedFree(indices);
+        }
     };
-
+    
     class twiddle_cache {
     protected:
-        FFTReal *owner;
-        // Two-dimensional arrays for direct indexing - much safer!
-        alignas(64) T1  cos_data[ max_nbr_bits ][ max_N2 ];
-        alignas(64) T1  sin_data[ max_nbr_bits ][ max_N2 ];
-        
+        T1** cos_data = nullptr;
+        T1** sin_data = nullptr;
+        int nbr_bits = 0;
+        int N2 = 0;
     public:
-        twiddle_cache(FFTReal *_owner) : owner(_owner) {
-            // Initialize twiddle factors for all passes
-            for (int pass = 0; pass < owner->nbr_bits; pass++) {
+        twiddle_cache(int bits, int n2): nbr_bits(bits), N2(n2) {
+            // Allocate 2D arrays using heap
+            cos_data = FFTReal::alignedAlloc<T1*>(nbr_bits);
+            sin_data = FFTReal::alignedAlloc<T1*>(nbr_bits);
+            
+            for (int pass = 0; pass < nbr_bits; pass++) {
+                cos_data[pass] = FFTReal::alignedAlloc<T1>(N2);
+                sin_data[pass] = FFTReal::alignedAlloc<T1>(N2);
+                
                 int nbr_coef = 1 << pass;
                 int h_nbr_coef = nbr_coef >> 1;
                 
@@ -520,7 +665,7 @@ protected:
                 if (h_nbr_coef <= 0) continue;
                 
                 // Initialize for this pass
-                for (int j = 0; j < h_nbr_coef && j < owner->N2; j++) {
+                for (int j = 0; j < h_nbr_coef && j < N2; j++) {
                     T1 angle = (j * M_PI) / nbr_coef;
                     cos_data[pass][j] = F_COS(angle);
                     sin_data[pass][j] = F_SIN(angle); // F_COS(M_PI/2 - angle);
@@ -528,23 +673,71 @@ protected:
             }
         }
         
-        // Get twiddle factors with bounds checking
-        inline void get_twiddle(int pass, int j, T& cos_val, T& sin_val) const {
-            if (pass >= 0 && pass < owner->nbr_bits && j >= 0 && j < owner->N2) {
+        ~twiddle_cache() {
+            if (cos_data) {
+                for (int i = 0; i < nbr_bits; i++) {
+                    FFTReal::alignedFree(cos_data[i]);
+                    FFTReal::alignedFree(sin_data[i]);
+                }
+                FFTReal::alignedFree(cos_data);
+                FFTReal::alignedFree(sin_data);
+            }
+        }
+        
+        twiddle_cache(twiddle_cache&& other) noexcept :
+            nbr_bits(other.nbr_bits),
+            N2(other.N2),
+            cos_data(std::move(other.cos_data)),
+            sin_data(std::move(other.sin_data))
+        {
+            other.nbr_bits = 0;
+            other.N2 = 0;
+            other.offsets = nullptr;
+            other.cos_data = nullptr;
+        }
+        
+        // Implement move assignment
+        twiddle_cache& operator=(twiddle_cache&& other) noexcept {
+            if (this != &other) {
+                alignedFree(cos_data);
+                alignedFree(sin_data);
+                
+                nbr_bits = other.nbr_bits;
+                N2 = other.N2;
+                cos_data = std::move(other.cos_data);
+                sin_data = std::move(other.sin_data);
+                
+                nbr_bits = 0;
+                N2 = 0;
+                other.cos_data = nullptr;
+                other.sin_data = nullptr;
+            }
+            return *this;
+        }
+        
+        // Delete copy constructor and assignment to avoid double-free issues
+        twiddle_cache(const twiddle_cache&) = delete;
+        twiddle_cache& operator=(const twiddle_cache&) = delete;
+        
+        inline void get_twiddle(int pass, int j, T& cos_val, T& sin_val) const
+        {
+            if (pass >= 0 && pass < nbr_bits && j >= 0 && j < N2) {
                 cos_val = cos_data[pass][j];
                 sin_val = sin_data[pass][j];
             }
         }
     };
-
-    const trigo_lookup      _trigo_lut;  // Keep this for backward compatibility
-    const bit_rev_lut<int>  _bit_rev_lut;
-    mutable twiddle_cache   _twiddle_cache;  // Changed from const to mutable
     
+    // Bit-reversal lookup table for FFT without std::vector
+   
+    std::unique_ptr<trigo_lookup>   _trigo_lut;
+    std::unique_ptr<bit_rev_lut>    _bit_rev_lut;
+    std::unique_ptr<twiddle_cache>  _twiddle_cache;
+
 #ifdef USE_NEON
     
 #ifdef NEW_NEON_OPT
-    // ... neon optimizations for sale 
+   // highly optimized routines go here
 #else // NEW_NEON_OPT
     
     void do_fft_neon_d8(const simd_double8 *x, simd_double8 *f)
@@ -1204,7 +1397,7 @@ protected:
             x[0] = f[0];
         }
     }
-#endif // NEW_NEON_OPT
+#endif
     
 #endif // USE_NEON
 };
