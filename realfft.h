@@ -1,20 +1,28 @@
 //  realfft.h - A highly optimized C++ SIMD vector templated class
-//  --- 
-//  FFTReal v1.1 (C) 2024 Dmitry Boldyrev <subband@gmail.com>
-//  (C) 2024 Laurent de Soras <ldesoras@club-internet.fr>
+//  ---
+//  FFTReal v1.2 (C) 2025 Dmitry Boldyrev <subband@gmail.com>
+//  Pascal version (C) 2024 Laurent de Soras <ldesoras@club-internet.fr>
 //  Object Pascal port (C) 2024 Frederic Vanmol <frederic@fruityloops.com>
+//
+//  NOTE: I have a highly hand optimizations for neon that I made that I offer
+//        for sale $200/app or project, contact me on the email above directly if interested
+//        the current optimizations are only give you surface level of what is possible
 
 #pragma once
-#include "const1.h"
+#include <mss/const1.h>
 
-#define USE_NEON
-
+#if TARGET_OS_MACCATALYST && TARGET_CPU_ARM64
 #ifdef USE_NEON
 #include <simd/simd.h>
 #endif
+#else
+#undef USE_NEON
+#endif
 
+// Available for purchase $200/app license (contact me directly)
+#define NEW_NEON_OPT
 
-template <typename T, int N>
+template <typename T, int max_N>
 class FFTReal
 {
     using T1 = SimdBase<T>;
@@ -23,15 +31,32 @@ class FFTReal
         return (x == 1) ? 0 : 1 + floorlog2(x >> 1);
     }
     
-    static const int nbr_bits = floorlog2( N );
-    static const int N2 = N >> 1;
+    static constexpr int max_nbr_bits = floorlog2( max_N );
+    static constexpr int max_N2 = max_N/2;
+    
+    int nbr_bits = max_nbr_bits;
+    int N = max_N;
+    int N2 = max_N2;
     
 protected:
     
-    alignas(64) T   buffer_ptr[ (N + 1) * 2 ];
-    alignas(64) T   yy[ (N + 1) * 2 ];
+    alignas(64) T   buffer_ptr[ (max_N + 1) * 2 ];
+    alignas(64) T   yy[ (max_N + 1) * 2 ];
+    alignas(64) T   xx[ max_N ];
     
 public:
+    FFTReal(const int inN = max_N) :
+         N(inN),
+         N2(inN/2),
+         nbr_bits(floorlog2( inN )),
+        _trigo_lut(this),
+        _bit_rev_lut(this),
+        _twiddle_cache(this)
+    {
+        if (inN > max_N) {
+            throw std::runtime_error("FFTReal: inN > max_N!!\n");
+        }
+    }
     
     // ========================================================================== //
     //      Description: Compute the real FFT of the array.                       //
@@ -46,23 +71,32 @@ public:
     
     void real_fft(const T* x, cmplxT<T>* y, bool do_scale = false)
     {
-        T1 mul = 1.0;
+        T mul = 1.0;
+        cmplxT<T> c;
+        if (do_scale) {
+            const T mul = 0.5;
+            for (int i=0; i < N; i++) {
+                xx[i] = x[i] * mul;
+            }
+        } else {
+            memcpy(xx, x, N * sizeof(T));
+        }
 #ifdef USE_NEON
         if constexpr( std::is_same_v<T, simd_double8> ) {
-            do_fft_neon_d8(x, yy);
+            do_fft_neon_d8(xx, yy);
         } else if constexpr( std::is_same_v<T, simd_float8> )
-            do_fft_neon_f8(x, yy);
+            do_fft_neon_f8(xx, yy);
         else
-            do_fft(x, yy);
+            do_fft(xx, yy);
 #else
-        do_fft(x, yy);
+        do_fft(xx, yy);
 #endif
-        if (do_scale) mul *= 1.0/(T1)N;
+        if (do_scale) mul *= 1./(T1)N;
         
+        y[0] = cmplxT<T>(yy[0], 0.0) * mul;
         for (int i=1; i < N2; i++) {
             y[i] = cmplxT<T>(yy[i], yy[i + N2]) * mul;
         }
-        y[0] = cmplxT<T>(yy[0], 0.0) * mul;
     }
     
     // ========================================================================== //
@@ -89,23 +123,21 @@ public:
         
 #ifdef USE_NEON
         if constexpr( std::is_same_v<T, simd_double8> ) {
-            do_ifft_neon_d8(yy, y);
+            do_ifft_neon_d8(yy, y, do_scale);
         } else if constexpr( std::is_same_v<T, simd_float8> )
-            do_ifft_neon_f8(yy, y);
+            do_ifft_neon_f8(yy, y, do_scale);
         else
             do_ifft(yy, y, do_scale);
 #else
         do_ifft(yy, y, do_scale);
 #endif
-        do_ifft(yy, y, do_scale);
     }
     
     void do_fft(const T *x, T *f)
     {
-        if (nbr_bits > 2)
-        {
+        T c, s;
+        if (nbr_bits > 2) {
             T *sf, *df;
-            
             if (nbr_bits & 1) {
                 df = buffer_ptr;
                 sf = f;
@@ -162,7 +194,8 @@ public:
                 auto h_nbr_coef = nbr_coef >> 1;
                 auto d_nbr_coef = nbr_coef << 1;
                 
-                auto cos_ptr = _trigo_lut.get_ptr(pass);
+                // No longer using _trigo_lut directly
+                // auto cos_ptr = _trigo_lut.get_ptr(pass);
                 
                 for (auto i = 0; i < N; i += d_nbr_coef)
                 {
@@ -185,8 +218,11 @@ public:
                     
                     for (int j = 1; j < h_nbr_coef; ++j)
                     {
-                        const T1 c = cos_ptr [j];                // cos (i*PI/nbr_coef);
-                        const T1 s = cos_ptr [h_nbr_coef - j];   // sin (i*PI/nbr_coef);
+                        // Using twiddle_cache instead of direct access
+                        // const T1 c = cos_ptr [j];                // cos (i*PI/nbr_coef);
+                        // const T1 s = cos_ptr [h_nbr_coef - j];   // sin (i*PI/nbr_coef);
+                        
+                        _twiddle_cache.get_twiddle(pass, j, c, s);
                         
                         T v = sf2r [j] * c - sf2i [j] * s;
                         dfr [ j] = sf1r [j] + v;
@@ -231,6 +267,7 @@ public:
     
     void do_ifft(const T *f, T *x, bool do_scale = false)
     {
+        T c, s;
         const T1 c2 = 2.0;
         
         T1 mul = 1.;
@@ -262,7 +299,8 @@ public:
                 auto h_nbr_coef = nbr_coef >> 1;
                 auto d_nbr_coef = nbr_coef << 1;
                 
-                auto cos_ptr = _trigo_lut.get_ptr (pass);
+                // No longer using _trigo_lut directly
+                // auto cos_ptr = _trigo_lut.get_ptr (pass);
                 
                 for (auto i = 0; i < N; i += d_nbr_coef)
                 {
@@ -283,24 +321,26 @@ public:
                     auto df1i = &df1r [h_nbr_coef];
                     auto df2i = &df1i [nbr_coef ];
                     
-                    for (auto i = 1; i < h_nbr_coef; ++i)
+                    for (auto j = 1; j < h_nbr_coef; ++j)
                     {
-                        df1r [i] = sfr [i] + sfi [-i];          // + sfr [nbr_coef - i]
-                        df1i [i] = sfi [i] - sfi [nbr_coef - i];
+                        df1r [j] = sfr [j] + sfi [-j];  // + sfr [nbr_coef - j]
+                        df1i [j] = sfi [j] - sfi [nbr_coef - j];
                         
-                        auto c = cos_ptr [i];
-                        auto s = cos_ptr [h_nbr_coef - i];
+                        // Using twiddle_cache instead of direct access
+                        // auto c = cos_ptr [j];
+                        // auto s = cos_ptr [h_nbr_coef - j];
                         
-                        auto vr = sfr [i] - sfi [-i];           // - sfr [nbr_coef - i];
-                        auto vi = sfi [i] + sfi [nbr_coef - i];
+                        _twiddle_cache.get_twiddle(pass, j, c, s);
                         
-                        df2r [i] = vr * c + vi * s;
-                        df2i [i] = vi * c - vr * s;
+                        auto vr = sfr [j] - sfi [-j];           // - sfr [nbr_coef - j];
+                        auto vi = sfi [j] + sfi [nbr_coef - j];
+                        
+                        df2r [j] = vr * c + vi * s;
+                        df2i [j] = vi * c - vr * s;
                     }
                 }
                 
                 // Prepare to the next pass
-                
                 if (pass < nbr_bits - 1) {
                     auto tmp = df;
                     df = sf;
@@ -384,25 +424,128 @@ public:
         }
     }
     
+    inline void do_rescale(T *x) const {
+        const T1 mul = 1./(T1)N;
+        for (auto i = 0; i < N; ++i)
+            x[i] *= mul;
+    }
+    
+    inline void do_rescale(cmplxT<T> *x) const {
+        const T mul = 1./(T1)N;
+        x[0] = cmplxT<T>(x[0].re, 0.0) * mul;
+        for (auto i = 1; i < N2; ++i)
+            x[i] *= mul;
+    }
+    
 protected:
     
-    
-    inline void do_rescale(T *x, int len) const
-    {
-        const T1 mul = 1./(T1)N;
-        for (auto i = 0; i < len; ++i)
-            x[i] *= mul;
-    }
-    
-    inline void do_rescale(cmplxT<T> *x, int len) const
-    {
-        const T1 mul = 1./(T1)N;
+    class trigo_lookup {
+    protected:
+        FFTReal *owner;
+        // Fixed-size arrays for storing twiddle factors
+        alignas(64) T1  cos_data[max_N];
+        alignas(64) int offsets[max_nbr_bits + 1];
+       
+    public:
+        trigo_lookup(FFTReal *_owner): owner(_owner) {
+            int total_coef = 0;
+            
+            // Calculate offsets for each pass
+            for (int pass = 0; pass < owner->nbr_bits; pass++) {
+                offsets[pass] = total_coef;
+                int nbr_coef = 1 << pass;
+                total_coef += nbr_coef;  // Store full table for each pass
+            }
+            offsets[owner->nbr_bits] = total_coef;  // End marker
+            
+            // Calculate and store trig values in flat array
+            for (int pass = 0; pass < owner->nbr_bits; pass++) {
+                int nbr_coef = 1 << pass;
+                int offset = offsets[pass];
+                
+                // Calculate and store the cosine values
+                for (int i = 0; i < nbr_coef; i++) {
+                    cos_data[offset + i] = F_COS((i * M_PI) / nbr_coef);
+                }
+            }
+        }
         
-        for (auto i = 0; i < len; ++i)
-            x[i] *= mul;
-    }
+        // Get pointer to the cosine values for a specific pass
+        inline const T1* get_ptr(int pass) const {
+            return &cos_data[offsets[pass]];
+        }
+    };
+    
+    // Bit-reversal lookup table for FFT without std::vector
+    template <typename S>
+    class bit_rev_lut {
+    protected:
+        FFTReal *owner;
+        // Fixed-size array for bit-reversed indices
+        alignas(64) S indices[max_N];
+        
+    public:
+        // Constructor
+        bit_rev_lut(FFTReal *_owner) : owner(_owner) {
+            // Fill the table with bit-reversed indices
+            for (int i = 0; i < owner->N; i++) {
+                int rev = 0;
+                for (int j = 0; j < owner->nbr_bits; j++) {
+                    if (i & (1 << j)) rev |= (1 << (owner->nbr_bits - 1 - j));
+                }
+                indices[i] = rev;
+            }
+        }
+        // Get pointer to the bit-reversal table
+        inline const S* get_ptr() const {
+            return indices;
+        }
+    };
+
+    class twiddle_cache {
+    protected:
+        FFTReal *owner;
+        // Two-dimensional arrays for direct indexing - much safer!
+        alignas(64) T1  cos_data[ max_nbr_bits ][ max_N2 ];
+        alignas(64) T1  sin_data[ max_nbr_bits ][ max_N2 ];
+        
+    public:
+        twiddle_cache(FFTReal *_owner) : owner(_owner) {
+            // Initialize twiddle factors for all passes
+            for (int pass = 0; pass < owner->nbr_bits; pass++) {
+                int nbr_coef = 1 << pass;
+                int h_nbr_coef = nbr_coef >> 1;
+                
+                // Skip passes with no coefficients
+                if (h_nbr_coef <= 0) continue;
+                
+                // Initialize for this pass
+                for (int j = 0; j < h_nbr_coef && j < owner->N2; j++) {
+                    T1 angle = (j * M_PI) / nbr_coef;
+                    cos_data[pass][j] = F_COS(angle);
+                    sin_data[pass][j] = F_SIN(angle); // F_COS(M_PI/2 - angle);
+                }
+            }
+        }
+        
+        // Get twiddle factors with bounds checking
+        inline void get_twiddle(int pass, int j, T& cos_val, T& sin_val) const {
+            if (pass >= 0 && pass < owner->nbr_bits && j >= 0 && j < owner->N2) {
+                cos_val = cos_data[pass][j];
+                sin_val = sin_data[pass][j];
+            }
+        }
+    };
+
+    const trigo_lookup      _trigo_lut;  // Keep this for backward compatibility
+    const bit_rev_lut<int>  _bit_rev_lut;
+    mutable twiddle_cache   _twiddle_cache;  // Changed from const to mutable
     
 #ifdef USE_NEON
+    
+#ifdef NEW_NEON_OPT
+    // ... neon optimizations for sale 
+#else // NEW_NEON_OPT
     
     void do_fft_neon_d8(const simd_double8 *x, simd_double8 *f)
     {
@@ -1061,101 +1204,7 @@ protected:
             x[0] = f[0];
         }
     }
-
+#endif // NEW_NEON_OPT
+    
 #endif // USE_NEON
-
-    
-    // Bit-reversed look-up table nested class
-    class BitReversedLUT
-    {
-    public:
-        
-        const int *get_ptr () const {
-            return _ptr;
-        }
-        
-        BitReversedLUT()
-        {
-            int cnt, br_index, bit;
-        
-            _ptr = new int [N];
-            
-            br_index = 0;
-            _ptr[0] = 0;
-            for (cnt=1; cnt < N; ++cnt)
-            {
-                // ++br_index (bit reversed)
-                bit = N >> 1;
-                while (((br_index ^= bit) & bit) == 0)
-                    bit >>= 1;
-                
-                _ptr[cnt] = br_index;
-            }
-        }
-        
-        ~BitReversedLUT() {
-            if (_ptr) delete[] _ptr;
-        }
-        
-    private:
-        int *_ptr = NULL;
-    };
-    
-    // Trigonometric look-up table nested class
-    class TrigoLUT
-    {
-    public:
-        
-        
-        const T1 * get_baseptr() const {
-            return _ptr;
-        }
-        
-        const T1 * get_ptr(const int level) const
-        {
-            return (_ptr + (1 << (level - 1)) - 4);
-        }
-        
-        // ========================================================================== //
-        //      Input parameters:                                                     //
-        //        - nbr_bits: number of bits of the array on which we want to do a    //
-        //                    FFT. Range: > 0                                         //
-        //      Throws: std::bad_alloc, anything                                      //
-        // ========================================================================== //
-        
-        TrigoLUT()
-        {
-            if (nbr_bits > 3)
-            {
-                int total_len = (1 << (nbr_bits - 1)) - 4;
-                _ptr = new T1 [total_len];
-                
-                for (int level=3; level < nbr_bits; ++level)
-                {
-                    const int level_len = 1 << (level - 1);
-                    T1 * const level_ptr = const_cast<T1 *>(get_ptr(level));
-                    const T1 mul = M_PI / T1(level_len << 1);
-                    
-                    for (int i=0; i < level_len; ++i)
-                        level_ptr[i] = F_COS(i * mul);
-                }
-            }
-        }
-        ~TrigoLUT()
-        {
-            if (_ptr) delete [] _ptr;
-        }
-        
-    private:
-        T1 *_ptr = NULL;
-    };
-    
-protected:
-    
-    const BitReversedLUT _bit_rev_lut;
-    const TrigoLUT       _trigo_lut;
-    
 };
-
-
-
