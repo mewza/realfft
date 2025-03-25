@@ -21,7 +21,7 @@
 #undef USE_NEON
 #endif
 
-#define NEW_NEON_OPT
+// #define NEW_NEON_OPT
 
 template <typename T>
 class FFTReal
