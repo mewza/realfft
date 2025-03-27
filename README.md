@@ -1,7 +1,7 @@
 FFTReal v1.2
 ------------
 
-This is the best (most precise and best sounding) real FFT/iFFT transform available 
+This is the best (fastest, most precise and best sounding) real FFT/iFFT transform available 
 in existence! I have gone through at least 10, and kept upgrading until I found this 
 one, so I adapted it for SIMD capability and arranged it into a templated class that
 works with SIMD vectors like simd_float8, simd_double4, etc. I highly optimized it 
