@@ -26,7 +26,8 @@ For the commercial part of it, I implemented custom routines for every simd type
 simd_float8, simd_float4, simd_float2, simd_float, simd_double8, simd_double4, 
 simd_double2, and simd_double, each routine is customly optimized in neon asm for 
 maximum performance. I also switched the internal arrays allocation into dynamic 
-for reasons that you can now statically declare like this:
+for reasons that you can now statically declare like this and it is more efficient
+on memory usage:
 
       // Delcare instance of FFTReal
       FFTReal<simd_double2> fft(1024);
