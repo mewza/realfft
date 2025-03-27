@@ -1,7 +1,7 @@
 FFTReal v1.2
 ------------
 
-This is the best (most precise and best sounding) real FFT/iFFT transforms available 
+This is the best (most precise and best sounding) real FFT/iFFT transform available 
 in existence! I have gone through at least 10, and kept upgrading until I found this 
 one, so I adapted it for SIMD capability and arranged it into a templated class that
 works with SIMD vectors like simd_float8, simd_double4, etc. I highly optimized it 
@@ -14,8 +14,21 @@ $200/project but I will offer a company or organization-wide license also for $5
 This is what I am using now in all of my audio projects instead of AVFFT, PFFFT,
 etc. It is by far the best sounding that I found that is also fast as lightning.
 
-NEW v1.1: I optimized the algo a bit with neon inline asm but I am no wizard at neon, 
-just trying to learn. If anyone wanting to optimize this further, I'd appreciate if 
-you send me your optimizations, email below.
+NEW v1.2: I optimized the neon assembly routines so that they gave another 30%-50%
+boost in performance, which translates in au.dio apps into snappiness vs lagged dsp-
+intensive apps. I also added tweedle caching, which also gave it a boost. The code
+here is free to use, but if you want maximum performance, consider licensing highly
+optimized neon version. For the commercial part of it, I implemented custom routines
+for every simd type: simd_float8, simd_float4, simd_float2, simd_float, simd_double8, 
+simd_double4, simd_double2, and simd_double, each routine is customly optimized in 
+neon asm for maximum performance. I also switched the internal arrays allocation into
+dynamic for reasons that you can now statically declare like this:
 
-DMT <subband@protonmail.com>
+      // Delcare instance of FFTReal
+      FFTReal<simd_double2> fft(1024);
+
+      fft.real_fft(datain, dataout);
+      // ...
+      fft.real_ifft(dataout, datain, true); // true = scale output by 1/len
+
+Dmitry <subband@protonmail.com>
