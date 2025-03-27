@@ -15,14 +15,15 @@ This is what I am using now in all of my audio projects instead of AVFFT, PFFFT,
 etc. It is by far the best sounding that I found that is also fast as lightning.
 
 NEW v1.2: I optimized the neon assembly routines so that they gave another 30%-50%
-boost in performance, which translates in au.dio apps into snappiness vs lagged dsp-
-intensive apps. I also added tweedle caching, which also gave it a boost. The code
-here is free to use, but if you want maximum performance, consider licensing highly
-optimized neon version. For the commercial part of it, I implemented custom routines
-for every simd type: simd_float8, simd_float4, simd_float2, simd_float, simd_double8, 
-simd_double4, simd_double2, and simd_double, each routine is customly optimized in 
-neon asm for maximum performance. I also switched the internal arrays allocation into
-dynamic for reasons that you can now statically declare like this:
+boost in performance, which directly translates in audio apps how they feel - snappy 
+or laggy especially in dsp-intensive apps like one I am developing. I also added 
+tweedle caching, which also gave it an extra boost. The code here is free to use, 
+but if you want maximum performance, consider licensing highly optimized neon version. 
+For the commercial part of it, I implemented custom routines for every simd type: 
+simd_float8, simd_float4, simd_float2, simd_float, simd_double8, simd_double4, 
+simd_double2, and simd_double, each routine is customly optimized in neon asm for 
+maximum performance. I also switched the internal arrays allocation into dynamic 
+for reasons that you can now statically declare like this:
 
       // Delcare instance of FFTReal
       FFTReal<simd_double2> fft(1024);
