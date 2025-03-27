@@ -1,9 +1,9 @@
 FFTReal v1.2
 ------------
 
-This is the best real FFT/iFFT transforms available in existence!
-I have gone through at least 10, and kept upgrading until I found this one, 
-so I adapted it for SIMD capability and arranged it into a templated class that
+This is the best (most precise and best sounding) real FFT/iFFT transforms available 
+in existence! I have gone through at least 10, and kept upgrading until I found this 
+one, so I adapted it for SIMD capability and arranged it into a templated class that
 works with SIMD vectors like simd_float8, simd_double4, etc. I highly optimized it 
 in neon asm, and now offering the highly optimized neon version that performs at least
 50% better than the one available for free here neon optimizations. Contact my email 
