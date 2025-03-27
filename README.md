@@ -9,7 +9,7 @@ in neon asm, and now offering the highly optimized neon version that performs at
 50% better than the one available for free here neon optimizations. Contact my email 
 for more info, but I intend to make a simple checkout cart, so you can instantly buy it 
 with an instant checkout. The pricing for my highly optimized neon asm routines is 
-$200/project but I will offer a company or organization-wide license for $500. It is also
+$200/project and I will offer a company or organization-wide license for $500. It is also
 an ideal package if you are doing multi-channel processing like I am doing in my iOS app,
 that individually processes 7.1 surround (8 channels) simultaneously with SIMD intrinsic
 vectors representation.
