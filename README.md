@@ -29,11 +29,23 @@ maximum performance. I also switched the internal arrays allocation into dynamic
 for reasons that you can now statically declare like this and it is more efficient
 on memory usage:
 
-      // Delcare instance of FFTReal
-      FFTReal<simd_double2> fft(1024);
+      // compute_fft_size() is an inline const function in your class
+     
+      const int fft_size = compute_fft_size(1024); 
+      { 
+            // Delcare instance of FFTReal
+            FFTReal<simd_double2> fft(fft_size);
 
-      fft.real_fft(datain, dataout);
-      // ...
-      fft.real_ifft(dataout, datain, true); // true = scale output by 1/len
+            fft.real_fft(data_in, data_out);
+            
+            // ... process data_out here ...
+            
+            // 3rd parameter optional, true = scale by 1/length, 
+            // omitted or false = don't scale
+            
+            fft.real_ifft(data_out, data_in, true); 
+      }
+      
+This was not possible before with FFTReal<simd_double2, 1024> fft; way of doing it.
 
 Dmitry <subband@protonmail.com>
