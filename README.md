@@ -19,8 +19,8 @@ etc. It is by far the best sounding that I found that is also fast as lightning.
 
 NEW v1.2: I optimized the neon assembly routines so that they gave another 30%-50%
 boost in performance, which directly translates in audio apps how they feel - snappy 
-or laggy especially in dsp-intensive apps like one I am developing. I also added 
-tweedle caching, which also gave it an extra boost. The code here is free to use, 
+or laggy especially in dsp-intensive apps like one I am developing. I added tweedle 
+caching, which gave it an extra boost in the free verrsion. The code here is free to use, 
 but if you want maximum performance, consider licensing highly optimized neon version. 
 For the commercial part of it, I implemented custom routines for every simd type: 
 simd_float8, simd_float4, simd_float2, simd_float, simd_double8, simd_double4, 
