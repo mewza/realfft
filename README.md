@@ -9,7 +9,7 @@ in neon asm, and now offering the highly optimized neon version that performs at
 50% better than the one available for free here neon optimizations. Contact my email 
 for more info, but I intend to make a simple checkout cart, so you can instantly buy it 
 with an instant checkout. The pricing for my highly optimized neon asm routines is 
-$200/project but I will offer a company or organization-wise license also for $500.
+$200/project but I will offer a company or organization-wide license also for $500.
 
 This is what I am using now in all of my audio projects instead of AVFFT, PFFFT,
 etc. It is by far the best sounding that I found that is also fast as lightning.
