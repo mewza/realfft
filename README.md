@@ -3,31 +3,23 @@ FFTReal v1.2
 
 This is the best (fastest, most precise and best sounding) real FFT/iFFT transform available 
 in existence! I have gone through at least 10, and kept upgrading until I found this 
-one, so I adapted it for SIMD capability and arranged it into a templated class that
-works with SIMD vectors like simd_float8, simd_double4, etc. I highly optimized it 
-in neon asm, and now offering the highly optimized neon version that performs at least
-50% better than the one available for free here neon optimizations. Contact my email 
-for more info, but I intend to make a simple checkout cart, so you can instantly buy it 
-with an instant checkout. The pricing for my highly optimized neon asm routines is 
-$200/project and I will offer a company or organization-wide license for $500. It is also
-an ideal package if you are doing multi-channel processing like I am doing in my iOS app,
-that individually processes 7.1 surround (8 channels) simultaneously with SIMD intrinsic
-vectors representation.
+one, so I arranged it into a templated class that suports base types like float and double
+as well as simd vectors like simd_float8, simd_double4, which can be specified as a template
+parameter T. I also spent a great deal of time hand optimizing it in neon assembler, and
+then spent another month refining that, which I am pleased to announce that it is available
+for sale from me directly. The additional (for sale) optimization takes optimizations to a 
+whole another level gaining about 30%-50% more performnace gain. I apologize for the extra
+hassle w/ transactions and emails, I will make it a paypal check out soon. The pricing for 
+my highly optimized neon asm routines is $200/project and $1000 for a company-wide use on
+multiple projects - up to 10. This is an ideal package if you are doing multi-channel p
+rocessing that would leverage instrinsic vector architecture. 
 
-This is what I am using now in all of my audio projects instead of AVFFT, PFFFT,
-etc. It is by far the best sounding that I found that is also fast as lightning.
+This is what I am using for now in all of my audio projects instead of AVFFT, PFFFT,
+etc. It is by far the best sounding and precise FFT I found, and you have my word on it,
+I don't just say things without testing.
 
-NEW v1.2: I optimized the neon assembly routines so that they gave another 30%-50%
-boost in performance, which directly translates in audio apps how they feel - snappy 
-or laggy especially in dsp-intensive apps like one I am developing. I added tweedle 
-caching, which gave it an extra boost in the free verrsion. The code here is free to use, 
-but if you want maximum performance, consider licensing highly optimized neon version. 
-For the commercial part of it, I implemented custom routines for every simd type: 
-simd_float8, simd_float4, simd_float2, simd_float, simd_double8, simd_double4, 
-simd_double2, and simd_double, each routine is customly optimized in neon asm for 
-maximum performance. I also switched the internal arrays allocation into dynamic 
-for reasons that you can now statically declare like this and it is more efficient
-on memory usage:
+v1.2 (NEW): I switched the internal dynamic arrays allocation which gives it better
+flexibility and efficiency for memory usage. Here's an example usage of RealFFT: 
 
       // compute_fft_size() is an inline const function in your class
      
@@ -46,6 +38,8 @@ on memory usage:
             fft.real_ifft(data_out, data_in, true); 
       }
       
-This was not possible before with FFTReal<simd_double2, 1024> fft; way of doing it.
+This style of initialization was not possible the way class was setup before (static),
+which required maximum FFT size initialization. Well, enjoy the world's best FFT class
+in the world! =)
 
 Dmitry <subband@protonmail.com>
