@@ -1,4 +1,4 @@
-/**  RealFFT v1.1 C++ wrapper class written by Dmitry Boldyrev
+/**  RealFFT v1.2 C++ wrapper class written by Dmitry Boldyrev
  **
  **  File: const1.h
  **  Miscellaneous useful functions and definitions for SIMD support
