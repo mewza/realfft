@@ -2,7 +2,9 @@ FFTReal v1.3
 ------------
 
 NEW (v1.3): I decided to give away the highly optimized NEON code!  This is my gift and contribution
-            to betterment of humanity. Enjoy, humanity, and (stop killing each other for no good reason) - get well!
+            to betterment of humanity. Enjoy, humanity, and (stop killing each other, stealing, plagirizing,
+            work together and share fairly the winning! not try rip each other off, create havoc, 
+            GOD doesn't like that and will punish you for that) - get well!
 
 This is the best (fastest, most precise and best sounding) real FFT/iFFT transform available 
 in existence! I have gone through at least 10, and kept upgrading until I found this 
