@@ -11,8 +11,8 @@
 #pragma once
 
 #include <TargetConditionals.h>
-#include <mss/const1.h>
 #include <memory>
+#include "const1.h"
 
 #if !TARGET_OS_MACCATALYST && TARGET_CPU_ARM64 && defined(__ARM_NEON)
 
