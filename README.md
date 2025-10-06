@@ -3,10 +3,9 @@ FFTReal v1.3
 
 NEW (v1.3): I decided to give away the highly optimized NEON code!  This is my gift and contribution
             to betterment of humanity. Enjoy, humanity, and (stop killing each other, stealing, plagirizing,
-            work together and share fairly the winning! not try rip each other off, create havoc, 
-            GOD doesn't like that and will punish you for that) - get well! One more stipulation, if you
-            somehow manage to create a faster version of this using neon that does not sacrifice quality,
-            you must email me your version of optimization. That's it!
+            work together and share fairly the winning! One more stipulation, if you somehow manage to create 
+            a faster optimization without sacrificing precision, and I dare you to! Then you must send me an 
+            email with your version of optimizations. That's it!
 
 How to reach me: 
             Dmitry Boldyrev <subband@gmail.com> or 
