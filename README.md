@@ -11,7 +11,10 @@ NEW (v1.3): I decided to give away the highly optimized NEON code!  This is my g
 How to reach me: 
             Dmitry Boldyrev <subband@gmail.com> or 
                             <subband@protonmail.com>
-            
+                            
+TODO: Implement hybrid vectorization for base types : float, double utilizing vector simd_float8
+and simd_double8 neon and non-neon instructions.
+
 This is the best (fastest, most precise and best sounding) real FFT/iFFT transform available 
 in existence! I have gone through at least 10, and kept upgrading until I found this 
 one, so I arranged it into a templated class that suports base types like float and double
