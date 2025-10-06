@@ -21,25 +21,7 @@
 #include <iostream>
 #include <functional>
 
-#ifndef D_ZFLOAT
-#define D_ZFLOAT
-
-#define DECL_ZFLOAT(TYPE) \
-typedef TYPE zfloat; \
-typedef simd_##TYPE##8 zfloat8; \
-typedef simd_##TYPE##4 zfloat4; \
-typedef simd_##TYPE##2 zfloat2; \
-static inline zfloat8 make_zfloat8(zfloat4& a, zfloat4& b) { return simd_make_##TYPE##8(a,b); } \
-static inline zfloat4 make_zfloat4(zfloat2& a, zfloat2& b) { return simd_make_##TYPE##4(a,b); } \
-static inline zfloat2 make_zfloat2(zfloat& a, zfloat& b) { return simd_make_##TYPE##2(a,b); }
-
-DECL_ZFLOAT(float)
-
-#endif
-
-#define ZFLOAT_IS_FLOAT constexpr(sizeof(zfloat) == sizeof(float))
 #define FUNDEMENTAL(T) std::is_same_v<T, float> || std::is_same_v<T, double>
-
 
 template<typename T>
 concept IsVector = requires { T{}[0]; };
@@ -81,7 +63,6 @@ using SimdSame = Simd<NewBase, SimdInfo<ZZ>::size>;
 template<typename ZZ>
 using SimdSameHalf = Simd<SimdBase<ZZ>, SimdInfo<ZZ>::size/2>;
 
-
 #define NOT_VECTOR(Z) (std::is_same_v<Z, float> || std::is_same_v<Z, double>)
 #define IS_VECTOR(Z)  (IsVector<Z>)
 
@@ -110,7 +91,14 @@ auto SimdMake = [](auto a, auto b) -> Z{
     }
 };
 
-
+/* Examples: 
+          using T1 = SimdBase<T>;
+          using T2 = Simd<T1,2>;
+          using TD = SimdSame<T,double>;
+          using TD1 = SimdBase<TD>;
+          using TD2 = Simd<TD1,2>;
+          using TDH = SimdSameHalf<TD>;
+*/
 typedef float mssFloat;
 
 typedef simd_float8 mssFloat8;
@@ -316,7 +304,7 @@ static __inline float F_EXP(float g) { return fast_expf(g); }
 static __inline mssFloat8 F_ATAN2(mssFloat8 a, mssFloat8 b) { return simd::atan2(a, b); }
 static __inline mssFloat4 F_ATAN2(mssFloat4 a, mssFloat4 b) { return simd::atan2(a, b); }
 static __inline mssFloat2 F_ATAN2(mssFloat2 a, mssFloat2 b) { return simd::atan2(a, b); }
-static __inline zfloat F_ATAN2(zfloat a, zfloat b) { return __builtin_atan2(a, b); }
+static __inline double F_ATAN2(double a, double b) { return __builtin_atan2(a, b); }
 
 static __inline double8v F_COS(double8v g) { return simd::cos(g); }
 static __inline double4v F_COS(double4v g) { return simd::cos(g); }
