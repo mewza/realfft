@@ -21,11 +21,6 @@
 #include <iostream>
 #include <functional>
 
-#define MSSFLOAT_IS_FLOAT (sizeof(mssFloat) == sizeof(float))
-
-#define NOT_VECTOR(Z) (std::is_same_v<Z, float> || std::is_same_v<Z, double>)
-#define IS_VECTOR(Z)  (!NOT_VECTOR(Z))
-
 #ifndef D_ZFLOAT
 #define D_ZFLOAT
 
@@ -42,9 +37,79 @@ DECL_ZFLOAT(float)
 
 #endif
 
-
 #define ZFLOAT_IS_FLOAT constexpr(sizeof(zfloat) == sizeof(float))
 #define FUNDEMENTAL(T) std::is_same_v<T, float> || std::is_same_v<T, double>
+
+
+template<typename T>
+concept IsVector = requires { T{}[0]; };
+
+static inline constexpr int alignFor(int typeSize, int nelem) {
+   // if (typeSize > 2)
+     //   return 16;
+    return typeSize * nelem;
+}
+
+template<typename ZZ>
+using SimdBase = decltype([] {
+    using std::is_same_v;
+
+    if constexpr(
+        is_same_v<ZZ, int> ||
+        is_same_v<ZZ, float> ||
+        is_same_v<ZZ, double>
+    )
+        return ZZ{};
+    else
+        return ZZ{}[0] + 0;
+}());
+
+template<typename ZZ> struct SimdInfo {
+    using Base = SimdBase<ZZ>;
+    static constexpr int size = sizeof(ZZ) / sizeof(Base);
+};
+
+template <class ZZ>
+inline constexpr int SimdSize = SimdInfo<ZZ>::size;
+
+template<typename Z, int size>
+using Simd = Z __attribute__((ext_vector_type(size),aligned(alignFor(sizeof(Z),size))));
+
+template<typename ZZ, typename NewBase>
+using SimdSame = Simd<NewBase, SimdInfo<ZZ>::size>;
+
+template<typename ZZ>
+using SimdSameHalf = Simd<SimdBase<ZZ>, SimdInfo<ZZ>::size/2>;
+
+
+#define NOT_VECTOR(Z) (std::is_same_v<Z, float> || std::is_same_v<Z, double>)
+#define IS_VECTOR(Z)  (IsVector<Z>)
+
+template <typename Z>
+auto SimdMake = [](auto a, auto b) -> Z{
+    using std::is_same_v;
+    using base = SimdBase<Z>;
+    switch (SimdSize<Z>) {
+        case 8:
+            if constexpr( std::is_same_v<base, float> )
+                return simd_make_float8(a, b);
+            else return simd_make_double8(a, b);
+            break;
+        case 4:
+            if constexpr( std::is_same_v<base, float> )
+                return simd_make_float8(a, b);
+            else return simd_make_double8(a, b);
+            break;
+        case 2:
+            if constexpr( std::is_same_v<base, float> )
+                return simd_make_float2(a, b);
+            else return simd_make_double2(a, b);
+            break;
+        default:
+            return Z{0};
+    }
+};
+
 
 typedef float mssFloat;
 
