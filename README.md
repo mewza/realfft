@@ -12,7 +12,8 @@ How to reach me:
                             <subband@protonmail.com>
                             
 TODO: Implement hybrid vectorization for base types : float, double utilizing vector simd_float8
-and simd_double8 neon and non-neon instructions.
+and simd_double8 neon and non-neon instructions, or optimization of utilizing simd_float4 for 
+simd_float8 template T for example.
 
 This is the best (fastest, most precise and best sounding) real FFT/iFFT transform available 
 in existence! I have gone through at least 10, and kept upgrading until I found this 
