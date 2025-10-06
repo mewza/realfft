@@ -52,41 +52,6 @@ typedef simd_float8 mssFloat8;
 typedef simd_float4 mssFloat4;
 typedef simd_float2 mssFloat2;
 
-template<class T,size_t N> struct zarray;
-template<class T,size_t N> struct zarray {
-    using type = T;
-    zarray() {
-        memset(dd,0,sizeof(T)*N);
-    }
-    inline void operator[](const simd_int8& i, const T& v) {
-        dd[i[0]][0]=v[0]; dd[i[1]][1]=v[1]; dd[i[2]][2]=v[2]; dd[i[3]][3]=v[3];
-        dd[i[4]][4]=v[4]; dd[i[5]][5]=v[5]; dd[i[6]][6]=v[6]; dd[i[7]][7]=v[7];
-    }
-    inline void operator[](const simd_int4& i, const T& v) {
-        dd[i[0]][0]=v[0]; dd[i[1]][1]=v[1]; dd[i[2]][2]=v[2]; dd[i[3]][3]=v[3];
-    }
-    inline void operator[](const simd_int2& i, const T& v) {
-        dd[i[0]][0]=v[0]; dd[i[1]][1]=v[1];
-    }
-    inline T& operator[](int i) {
-        return dd[i];
-    }
-    inline const T& operator[](int i) const {
-        return dd[i];
-    }
-    inline zfloat8 operator[](const simd_int8& i) const {
-        return zfloat8{ dd[i[0]][0], dd[i[1]][1], dd[i[2]][2], dd[i[3]][3], dd[i[4]][4], dd[i[5]][5], dd[i[6]][6], dd[i[7]][7] };
-    }
-    inline zfloat4 operator[](const simd_int4& i) const {
-        return zfloat4{ dd[i[0]][0], dd[i[1]][1], dd[i[2]][2] ,dd[i[3]][3] };
-    }
-    inline zfloat2 operator[](const simd_int2& i) const {
-        return zfloat2{ dd[i[0]][0], dd[i[1]][1] };
-    }
-    T dd[N];
-};
-
-
 typedef simd_float2 float2v;
 typedef simd_float4 float4v;
 typedef simd_float8 float8v;
@@ -267,228 +232,6 @@ static __inline double __builtin_reduce_avg(const mssFloat4 &a) {
     return (x != x) ? 0.0 : x;
 }
 
-/*
-#ifdef MAX
-#undef MAX
-#define MAX(a,b)    F_MAX(a,b)
-#endif
-
-#ifdef MIN
-#undef MIN
-#define MIN(a,b)    F_MIN(a,b)
-#endif
-*/
-
-static __inline int __float_as_int(float in) {
-     union fi { int i; float f; } conv;
-     conv.f = in;
-     return conv.i;
-}
-
-static __inline float __int_as_float(int a)
-{
-    union {int a; float b;} u;
-    u.a = a;
-    return u.b;
-}
-
-__inline static double fast_logf(double a)
-{
-    double m, r, s, t, i, f;
-    int32_t e;
-
- //   return __builtin_log(a);
-    
-    if ((a > 0.0) && (a <= 3.40e+38)) { // 0x1.fffffep+127
-        m = frexpf(a, &e);
-        if (m < 0.666666667) {
-            m = m + m;
-            e = e - 1;
-        }
-        i = (float)e;
-        /* m in [2/3, 4/3] */
-        f = m - 1.0f;
-        s = f * f;
-        /* Compute log1p(f) for f in [-1/3, 1/3] */
-        r = fmaf(-0.130187988, f, 0.140889585); // -0x1.0aa000p-3, 0x1.208ab8p-3
-        t = fmaf(-0.121489584, f, 0.139809534); // -0x1.f19f10p-4, 0x1.1e5476p-3
-        r = fmaf(r, s, t);
-        r = fmaf(r, f, -0.166845024); // -0x1.55b2d8p-3
-        r = fmaf(r, f, 0.200121149); //  0x1.99d91ep-3
-        r = fmaf(r, f, -0.249996364); // -0x1.fffe18p-3
-        r = fmaf(r, f, 0.333331943); //  0x1.5554f8p-2
-        r = fmaf(r, f, -0.500000000); // -0x1.000000p-1
-        r = fmaf(r, s, f);
-        r = fmaf(i, 0.693147182, r); //   0x1.62e430p-1 // log(2)
-        return r;
-    }
-    return 0.0;
-}
-
-__inline static double fast_expf (double a)
-{
-  //  return __builtin_exp(a);
-    
-    double f, r, j, s, t;
-    long i, ia;
-
-    // exp(a) = 2**i * exp(f); i = rintf (a / log(2))
-    j = fmaf (1.442695, a, 12582912.) - 12582912.; // 0x1.715476p0, 0x1.8p23
-    f = fmaf (j, -6.93145752e-1, a); // -0x1.62e400p-1  // log_2_hi
-    f = fmaf (j, -1.42860677e-6, f); // -0x1.7f7d1cp-20 // log_2_lo
-    i = (int)j;
-    // approximate r = exp(f) on interval [-log(2)/2, +log(2)/2]
-    r =             1.37805939e-3;  // 0x1.694000p-10
-    r = fmaf (r, f, 8.37312452e-3); // 0x1.125edcp-7
-    r = fmaf (r, f, 4.16695364e-2); // 0x1.555b5ap-5
-    r = fmaf (r, f, 1.66664720e-1); // 0x1.555450p-3
-    r = fmaf (r, f, 4.99999851e-1); // 0x1.fffff6p-2
-    r = fmaf (r, f, 1.00000000e+0); // 0x1.000000p+0
-    r = fmaf (r, f, 1.00000000e+0); // 0x1.000000p+0
-    // exp(a) = 2**i * r
-    ia = (i > 0) ?  0 : 0x83000000;
-    s = __int_as_float (0x7f000000 + ia);
-    t = __int_as_float ((i << 23) - ia);
-    r = r * s;
-    r = r * t;
-    // handle special cases: severe overflow / underflow
-    if (F_ABS (a) >= 104.0) r = s * s;
-    return r;
-}
-
-// Compute arctangent. Maximum observed error: 1.64991 ulps
-
-//#define fast_atan atan
-
-static __inline double fast_atan( double x )
-{
-   // return __builtin_atan( x );
-    
-    double a, z, p, r, q, s, t;
-    // argument reduction:
-    //   arctan (-x) = -arctan(x);
-    //   arctan (1/x) = 1/2 * pi - arctan (x), when x > 0
-    
-    z = F_ABS (x);
-    a = (z > 1.0) ? (1.0 / z) : z;
-    s = a * a;
-    q = s * s;
-    // core approximation: approximate atan(x) on [0,1]
-    p =            -2.0258553044340116e-5;  // -0x1.53e1d2a258e3ap-16
-    t =             2.2302240345710764e-4;  //  0x1.d3b63dbb6167ap-13
-    p = fma (p, q, -1.1640717779912220e-3); // -0x1.312788ddde71dp-10
-    t = fma (t, q,  3.8559749383656407e-3); //  0x1.f9690c824aaf1p-9
-    p = fma (p, q, -9.1845592187222193e-3); // -0x1.2cf5aabc7dbd2p-7
-    t = fma (t, q,  1.6978035834594660e-2); //  0x1.162b0b2a3bcdcp-6
-    p = fma (p, q, -2.5826796814492296e-2); // -0x1.a7256feb6f841p-6
-    t = fma (t, q,  3.4067811082715810e-2); //  0x1.171560ce4a4ecp-5
-    p = fma (p, q, -4.0926382420509999e-2); // -0x1.4f44d841450e8p-5
-    t = fma (t, q,  4.6739496199158334e-2); //  0x1.7ee3d3f36bbc6p-5
-    p = fma (p, q, -5.2392330054601366e-2); // -0x1.ad32ae04a9fd8p-5
-    t = fma (t, q,  5.8773077721790683e-2); //  0x1.e17813d669537p-5
-    p = fma (p, q, -6.6658603633512892e-2); // -0x1.11089ca9a5be4p-4
-    t = fma (t, q,  7.6922129305867892e-2); //  0x1.3b12b2db5173cp-4
-    p = fma (p, s, t);
-    p = fma (p, s, -9.0909012354005267e-2); // -0x1.745d022f8dc5fp-4
-    p = fma (p, s,  1.1111110678749421e-1); //  0x1.c71c709dfe925p-4
-    p = fma (p, s, -1.4285714271334810e-1); // -0x1.2492491fa1742p-3
-    p = fma (p, s,  1.9999999999755005e-1); //  0x1.99999999840cdp-3
-    p = fma (p, s, -3.3333333333331838e-1); // -0x1.5555555555448p-2
-    p = fma (p * s, a, a);
-    // back substitution in accordance with argument reduction //
-    // double-precision factorization of PI/2 courtesy of Tor Myklebust //
-    r = (z > 1.0) ? fma (0.93282184640716537, 1.6839188885261840, -p) : p;
-    return copysign (r, x);
-}
-
-static __inline float _fast_sqrt(float val)  {
-        union {
-            int32_t tmp;
-            float val;
-        } u;
-    
-        u.val = val;
-        // Remove last bit so 1.0 gives 1.0
-        u.tmp -= 1<<23;
-        // tmp is now an approximation to logbase2(val)
-        u.tmp >>= 1; // divide by 2
-        u.tmp += 1<<29; // add 64 to exponent: (e+127)/2 =(e/2)+63,
-        // that represents (e/2)-64 but we want e/2
-        return u.val;
-}
-
-template <typename T>
-static __inline T _fast_sqrt(T val)  {
-        union {
-            int32_t tmp;
-            float val;
-        } u;
-    
-        u.val = val;
-        // Remove last bit so 1.0 gives 1.0
-        u.tmp -= 1<<23;
-        // tmp is now an approximation to logbase2(val)
-        u.tmp >>= 1; // divide by 2
-        u.tmp += 1<<29; // add 64 to exponent: (e+127)/2 =(e/2)+63,
-        // that represents (e/2)-64 but we want e/2
-        return u.val;
-}
-
-static __inline double square(double x) {
-    return x*x;
-}
-
-static __inline float fast_sqrt2(const float x)
-{
-    const float xhalf = 0.5f*x;
-    union {
-        float x;
-        int32_t i;
-    } u;
-    u.x = x;
-    u.i = 0x5f3759df - (u.i >> 1);  // gives initial guess y0
-    return x*u.x*(1.5f - xhalf*u.x*u.x);// Newton step, repeating increases accuracy
-}
-
-static __inline double fast_sqrt(double v) {
-    return _fast_sqrt(v);
-}
-
-static __inline double _fast_isqrt(double v)
-{
-    float x=(float)v,xhalf = 0.5f*x;
-    int32_t i = *(int32_t*)&x;
-    i = 0x5f3759df-(i>>1);
-    x = *(float*)&i;
-    x = x*(1.5f-(xhalf*x*x));
-    return (double)x;
-}
-
-static __inline double fast_isqrt(const double x) {
-  //  return 1./__builtin_sqrt(x);
-    return _fast_isqrt(x);
-}
-
-static constexpr double G1 = 0.232829;
-static constexpr double G2 = 0.612779;
-static constexpr double G3 = 0.843573;
-static constexpr double G4 = 0.942636;
-static constexpr double G5 = 0.980351;
-static constexpr double G6 = 0.995302;
-
-static __inline double fast_log2(double x) { return __builtin_log2(x); }
-static __inline double fast_log(double x) { return fast_logf(x); } //__builtin_log(x); }
-
-static __inline double fast_powf(double a, double b) {
-  // return powf( a, b );
-   
-   return fast_expf (b * __builtin_log (a));
-}
-
-static __inline double db2lin(double db){ // dB to linear
-   return fast_powf(10.0, 0.05 * db);
-}
-
 static __inline mssFloat8 F_POW(mssFloat8 a, mssFloat8 b) { return simd::pow(a, b); }
 static __inline mssFloat4 F_POW(mssFloat4 a, mssFloat4 b) { return simd::pow(a, b); }
 static __inline mssFloat2 F_POW(mssFloat2 a, mssFloat2 b) { return simd::pow(a, b); }
@@ -590,17 +333,6 @@ static __inline int ISNORMd(double v) { return __builtin_isnormal(v); }
 
 #endif
 
-
-__inline double sanitize_denormal(const double &val)
-{
-    return (ISINF(val) || ISNAN(val)) ? 0.0 : val;
-}
-
-__inline bool is_normal(const double &val)
-{
-    return !ISINF(val) && !ISNAN(val);
-}
-
 #define IS_NORMAL_DECL(TYPE) \
 __inline bool is_normal(const TYPE &val) \
 { \
@@ -667,79 +399,115 @@ static __inline int sanitize_denormals( T *out, int count, const char *str = "" 
 #ifndef D_CMPLX_T
 #define D_CMPLX_T
 
+
 template <typename T>
 struct cmplxT {
-public:
-    cmplxT(T r, T i) { re = r; im = i; }
-    cmplxT(const cmplxT& v) {
+    using T1 = SimdBase<T>;
+    // Data members
+    T re, im;
+    
+    // Constructors
+    cmplxT() : re(0.0), im(0.0) {}
+    cmplxT(T r, T i) : re(r), im(i) {}
+    cmplxT(const cmplxT& v) : re(v.re), im(v.im) {}
+    cmplxT(long double v) : re(v), im(v) {}
+    cmplxT(const T1& v) : re(v), im(v) {}
+    cmplxT(T r, double i) : re(r), im(i) {} // Added for yy[0], 0.0 case
+    
+    
+    static inline cmplxT<T> polar(T mag, T phase) {
+        return cmplxT<T>(mag * F_COS(phase), mag * F_SIN(phase));
+    }
+    
+    // Conversion operator
+    operator cmplxT<T>() const { return cmplxT(re, im); }
+    
+    // Assignment operators - don't use const return type
+    inline cmplxT<T>& operator = (const cmplxT<T>& v) {
         re = v.re;
         im = v.im;
-    }
-    cmplxT(long double v) {
-        re = v; im = v;
-    }
-    cmplxT() { re = 0.0; im = 0.0; }
-    
-    T mag() const {
-        return F_SQRT(re * re + im * im);
+        return *this;
     }
     
-    inline cmplxT<T> operator * (const double d) {
-        return cmplxT(re * d, im * d);
+    inline cmplxT<T>& operator = (const T1& v) {
+        re = v;
+        im = v;
+        return *this;
     }
     
-    inline cmplxT<T> operator * (const cmplxT<T>& d) {
-        return cmplxT(re * d.re, im * d.im);
+    // Binary arithmetic operators - should not modify *this
+    inline cmplxT<T> operator * (const T& x) const {
+        return cmplxT<T>(re * x, im * x);
     }
     
-    inline void operator *= (long double d) {
-        re *= d;
-        im *= d;
+    inline cmplxT<T> operator * (const long double x) const {
+        return cmplxT<T>(re * x, im * x);
     }
     
-    inline void operator *= (const cmplxT<T> &x)
-    {
-        *this = cmplxT<T>(re * x.re - im * x.im, re * x.im + im * x.re);
+    inline cmplxT<T> operator * (const cmplxT<T>& x) const {
+        return cmplxT<T>(re * x.re - im * x.im, re * x.im + im * x.re);
     }
     
-    inline cmplxT<T> operator / (const cmplxT<T> &x)
-    {
-        T denum = (x.re * x.re + x.im * x.im);
-        return cmplxT<T>((re * x.re + im * x.im) / denum, (im * x.re - re * x.im) / denum);
+    inline cmplxT<T> operator + (const cmplxT<T>& x) const {
+        return cmplxT<T>(re + x.re, im + x.im);
     }
     
-    inline cmplxT<T> operator ^ (const cmplxT<T> &d) {
-        return cmplxT<T>(re * d.re - im * d.im, re * d.im + im * d.re);
-    }
-
-    inline cmplxT<T> operator & (const int8v& mask) {
-        return cmplxT<T>(shufflevector(re,mask), shufflevector(im,mask));
-    }
-
-    inline void operator += (const cmplxT<zfloat4> &d) {
-        re += d.re;
-        im += d.im;
+    inline cmplxT<T> operator - () const {
+        return cmplxT<T>(-re, -im);
     }
     
-    inline void operator += (const cmplxT<zfloat8> &d) {
-        re += d.re;
-        im += d.im;
+    inline cmplxT<T> operator - (const cmplxT<T>& d) const {
+        return *this = *this - d; //cmplxT<T>(re - d.re, im - d.im);
     }
     
-    inline void operator += (const cmplxT<zfloat> &d) {
-        re += d.re;
-        im += d.im;
+    inline cmplxT<T> operator / (const cmplxT<T>& x) const {
+        T denominator = (x.re * x.re + x.im * x.im);
+        return cmplxT<T>(
+            (re * x.re + im * x.im) / denominator,
+            (im * x.re - re * x.im) / denominator
+        );
     }
-
+    
+    inline cmplxT<T> operator & (const int8v& mask) const {
+        return cmplxT<T>(shufflevector(re, mask), shufflevector(im, mask));
+    }
+    
+    // Compound assignment operators - should not be const
+    inline const cmplxT<T>& operator *= (const long double d) {
+        return *this = *this * d;
+    }
+    
+    inline const cmplxT<T>& operator *= (const T& d) {
+        return *this = *this * d;
+    }
+    
+    inline const cmplxT<T>& operator *= (const cmplxT<T>& x) {
+        return *this = *this * x;
+    }
+    
+    inline const cmplxT<T>& operator += (const cmplxT<T>& x) {
+        return *this = *this + x;
+    }
+    
+    inline const cmplxT<T>& operator -= (const cmplxT<T>& x) {
+        return *this = *this - x;
+    }
+    
+    // Index operator - must return by value, not reference
+  //  inline cmplxT<T1> operator [](const int i) const {
+  //      return cmplxT<T1>(re[i], im[i]);
+  //  }
+    
+    // Utility methods
+    inline T length() const { return F_SQRT(re * re + im * im); }
+    inline T mag() const { return F_SQRT(re * re + im * im); }
+    inline T phase() const { return F_ATAN2(im, re); }
     inline T real() const { return re; }
     inline T imag() const { return im; }
-
-    T re;
-    T im;
-    
-}; // __attribute__((packed));
+};
 
 #endif //D_CMPLX_T
+
 
 #define MALLOC_V4SF_ALIGNMENT   64
 #define VALIGNED_ID             'VLGN'
