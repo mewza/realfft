@@ -24,29 +24,29 @@
 #pragma warning("Compiling with NEON optimizations")
 #endif // TARGET_OS_MACCATALYST
 
-namespace fft_neon_helpers {
+namespace fft_simd_helpers {
 
-void do_fft_neon_f1_impl(const float* x, float* f, int N, int nbr_bits,
+void do_fft_simd_f1_impl(const float* x, float* f, int N, int nbr_bits,
                        const int* bit_rev_lut, float* buffer_ptr,
                        void* twiddle_cache_ptr);
 
-void do_fft_neon_d1_impl(const double* x, double* f, int N, int nbr_bits,
+void do_fft_simd_d1_impl(const double* x, double* f, int N, int nbr_bits,
                        const int* bit_rev_lut, double* buffer_ptr,
                        void* twiddle_cache_ptr);
 
-void do_ifft_neon_d1_impl(const double* _Nonnull f, double* _Nonnull x, int N,
+void do_ifft_simd_d1_impl(const double* _Nonnull f, double* _Nonnull x, int N,
                         int nbr_bits, const int* _Nonnull bit_rev_lut,
                         double* _Nonnull buffer_ptr,
                         void* _Nonnull twiddle_cache_ptr,
                         bool do_scale);
 
-void do_ifft_neon_f1_impl(const float* _Nonnull f, float* _Nonnull x, int N,
+void do_ifft_simd_f1_impl(const float* _Nonnull f, float* _Nonnull x, int N,
                         int nbr_bits, const int* _Nonnull bit_rev_lut,
                         float* _Nonnull buffer_ptr,
                         void* _Nonnull twiddle_cache_ptr,
                         bool do_scale);
 
-} // namespace fft_neon_helpers
+} // namespace fft_simd_helpers
 
 template <typename T>
 class FFTReal
@@ -123,10 +123,10 @@ public:
             memcpy(xx, x, _N * sizeof(T));
         }
         if constexpr( std::is_same_v<T, float> ) {
-            fft_neon_helpers::do_fft_neon_f1_impl(xx, yy, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()));
+            fft_simd_helpers::do_fft_simd_f1_impl(xx, yy, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()));
         }
         else if constexpr( std::is_same_v<T, double> ) {
-            fft_neon_helpers::do_fft_neon_d1_impl(xx, yy, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()));
+            fft_simd_helpers::do_fft_simd_d1_impl(xx, yy, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()));
         }
 #if FFT_USE_NEON
         if constexpr( std::is_same_v<T, simd_double8> ) {
@@ -182,9 +182,9 @@ public:
         yy[ _N2 ] = x[_N2].re;    // ✓ Nyquist from input, not forced to 0!
         
         if constexpr( std::is_same_v<T, float> ) {
-            fft_neon_helpers::do_ifft_neon_f1_impl(yy, y, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
+            fft_simd_helpers::do_ifft_simd_f1_impl(yy, y, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
         } else if constexpr( std::is_same_v<T, double> ) {
-            fft_neon_helpers::do_ifft_neon_d1_impl(yy, y, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
+            fft_simd_helpers::do_ifft_simd_d1_impl(yy, y, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
         }
 #if FFT_USE_NEON
         if constexpr( std::is_same_v<T, simd_double8> ) {
@@ -6623,9 +6623,9 @@ protected:
 #endif // FFT_USE_NEON
 };
 
-namespace fft_neon_helpers {
+namespace fft_sim_helpers {
 
-inline void do_fft_neon_f1_impl(
+inline void do_fft_simd_f1_impl(
     const float* x,
     float* f,
     int N,
@@ -6777,7 +6777,7 @@ inline void do_fft_neon_f1_impl(
     }
 }
 
-inline void do_fft_neon_d1_impl(
+inline void do_fft_simd_d1_impl(
     const double* x,
     double* f,
     int N,
@@ -6937,7 +6937,7 @@ inline void do_fft_neon_d1_impl(
 // IFFT for float using simd_float8
 // ============================================================================
 
-inline void do_ifft_neon_f1_impl(
+inline void do_ifft_simd_f1_impl(
     const float* _Nonnull f,
     float* _Nonnull x,
     int N,
@@ -7130,7 +7130,7 @@ inline void do_ifft_neon_f1_impl(
 // IFFT for double using simd_double4
 // ============================================================================
 
-inline void do_ifft_neon_d1_impl(
+inline void do_ifft_simd_d1_impl(
     const double* _Nonnull f,
     double* _Nonnull x,
     int N,
@@ -7319,6 +7319,8 @@ inline void do_ifft_neon_d1_impl(
     }
 }
 
-} // namespace fft_neon_helpers
+} // namespace fft_simd_helpers
+
+
 
 
