@@ -6623,7 +6623,7 @@ protected:
 #endif // FFT_USE_NEON
 };
 
-namespace fft_sim_helpers {
+namespace fft_simd_helpers {
 
 inline void do_fft_simd_f1_impl(
     const float* x,
