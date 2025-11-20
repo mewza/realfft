@@ -823,14 +823,15 @@ protected:
                     
                     simd_float8 v0, v1, v2, v3, v4, v5, v6, v7;
                     for (int lane = 0; lane < 8; lane++) {
-                        v0[lane] = df2[lane * 8 + 0];
-                        v1[lane] = df2[lane * 8 + 1];
-                        v2[lane] = df2[lane * 8 + 2];
-                        v3[lane] = df2[lane * 8 + 3];
-                        v4[lane] = df2[lane * 8 + 4];
-                        v5[lane] = df2[lane * 8 + 5];
-                        v6[lane] = df2[lane * 8 + 6];
-                        v7[lane] = df2[lane * 8 + 7];
+                        const int lane8 = lane * 8;
+                        v0[lane] = df2[lane8 + 0];
+                        v1[lane] = df2[lane8 + 1];
+                        v2[lane] = df2[lane8 + 2];
+                        v3[lane] = df2[lane8 + 3];
+                        v4[lane] = df2[lane8 + 4];
+                        v5[lane] = df2[lane8 + 5];
+                        v6[lane] = df2[lane8 + 6];
+                        v7[lane] = df2[lane8 + 7];
                     }
                     
                     simd_float8 t0 = v0 + v4;
@@ -848,14 +849,15 @@ protected:
                     simd_float8 out7 = t3 - v3;
                     
                     for (int lane = 0; lane < 8; lane++) {
-                        sf2[lane * 8 + 0] = out0[lane];
-                        sf2[lane * 8 + 1] = out1[lane];
-                        sf2[lane * 8 + 2] = out2[lane];
-                        sf2[lane * 8 + 3] = out3[lane];
-                        sf2[lane * 8 + 4] = out4[lane];
-                        sf2[lane * 8 + 5] = out5[lane];
-                        sf2[lane * 8 + 6] = out6[lane];
-                        sf2[lane * 8 + 7] = out7[lane];
+                        const int lane8 = lane * 8;
+                        sf2[lane8 + 0] = out0[lane];
+                        sf2[lane8 + 1] = out1[lane];
+                        sf2[lane8 + 2] = out2[lane];
+                        sf2[lane8 + 3] = out3[lane];
+                        sf2[lane8 + 4] = out4[lane];
+                        sf2[lane8 + 5] = out5[lane];
+                        sf2[lane8 + 6] = out6[lane];
+                        sf2[lane8 + 7] = out7[lane];
                     }
                 }
             }
@@ -1091,14 +1093,15 @@ protected:
                     
                     simd_float8 v0, v1, v2, v3, v4, v5, v6, v7;
                     for (int lane = 0; lane < 8; lane++) {
-                        v0[lane] = sf2[lane * 8 + 0];
-                        v1[lane] = sf2[lane * 8 + 1];
-                        v2[lane] = sf2[lane * 8 + 2];
-                        v3[lane] = sf2[lane * 8 + 3];
-                        v4[lane] = sf2[lane * 8 + 4];
-                        v5[lane] = sf2[lane * 8 + 5];
-                        v6[lane] = sf2[lane * 8 + 6];
-                        v7[lane] = sf2[lane * 8 + 7];
+                        const int lane8 = lane * 8;
+                        v0[lane] = sf2[lane8 + 0];
+                        v1[lane] = sf2[lane8 + 1];
+                        v2[lane] = sf2[lane8 + 2];
+                        v3[lane] = sf2[lane8 + 3];
+                        v4[lane] = sf2[lane8 + 4];
+                        v5[lane] = sf2[lane8 + 5];
+                        v6[lane] = sf2[lane8 + 6];
+                        v7[lane] = sf2[lane8 + 7];
                     }
                     
                     simd_float8 vr = v1 - v3;
@@ -1114,14 +1117,15 @@ protected:
                     simd_float8 out7 = (vi - vr) * sq2_2;
                     
                     for (int lane = 0; lane < 8; lane++) {
-                        df2[lane * 8 + 0] = out0[lane];
-                        df2[lane * 8 + 1] = out1[lane];
-                        df2[lane * 8 + 2] = out2[lane];
-                        df2[lane * 8 + 3] = out3[lane];
-                        df2[lane * 8 + 4] = out4[lane];
-                        df2[lane * 8 + 5] = out5[lane];
-                        df2[lane * 8 + 6] = out6[lane];
-                        df2[lane * 8 + 7] = out7[lane];
+                        const int lane8 = lane * 8;
+                        df2[lane8 + 0] = out0[lane];
+                        df2[lane8 + 1] = out1[lane];
+                        df2[lane8 + 2] = out2[lane];
+                        df2[lane8 + 3] = out3[lane];
+                        df2[lane8 + 4] = out4[lane];
+                        df2[lane8 + 5] = out5[lane];
+                        df2[lane8 + 6] = out6[lane];
+                        df2[lane8 + 7] = out7[lane];
                     }
                 }
             }
@@ -1158,10 +1162,11 @@ protected:
                     
                     simd_float8 b0_0, b0_2, b1, b3;
                     for (int lane = 0; lane < 8; lane++) {
-                        b0_0[lane] = sf2[lane * 8 + 0] + sf2[lane * 8 + 2];
-                        b0_2[lane] = sf2[lane * 8 + 0] - sf2[lane * 8 + 2];
-                        b1[lane] = sf2[lane * 8 + 1] * c2;
-                        b3[lane] = sf2[lane * 8 + 3] * c2;
+                        const int lane8 = lane * 8;
+                        b0_0[lane] = sf2[lane8 + 0] + sf2[lane8 + 2];
+                        b0_2[lane] = sf2[lane8 + 0] - sf2[lane8 + 2];
+                        b1[lane] = sf2[lane8 + 1] * c2;
+                        b3[lane] = sf2[lane8 + 3] * c2;
                     }
                     
                     simd_float8 out0 = (b0_0 + b1) * vmul;
@@ -1170,10 +1175,11 @@ protected:
                     simd_float8 out3 = (b0_2 - b3) * vmul;
                     
                     for (int lane = 0; lane < 8; lane++) {
-                        x[lut[lane * 8 + 0]] = out0[lane];
-                        x[lut[lane * 8 + 1]] = out1[lane];
-                        x[lut[lane * 8 + 2]] = out2[lane];
-                        x[lut[lane * 8 + 3]] = out3[lane];
+                        const int lane8 = lane * 8;
+                        x[lut[lane8 + 0]] = out0[lane];
+                        x[lut[lane8 + 1]] = out1[lane];
+                        x[lut[lane8 + 2]] = out2[lane];
+                        x[lut[lane8 + 3]] = out3[lane];
                     }
                 }
             }
@@ -1383,14 +1389,15 @@ protected:
                     
                     simd_double4 v0, v1, v2, v3, v4, v5, v6, v7;
                     for (int lane = 0; lane < 4; lane++) {
-                        v0[lane] = df2[lane * 8 + 0];
-                        v1[lane] = df2[lane * 8 + 1];
-                        v2[lane] = df2[lane * 8 + 2];
-                        v3[lane] = df2[lane * 8 + 3];
-                        v4[lane] = df2[lane * 8 + 4];
-                        v5[lane] = df2[lane * 8 + 5];
-                        v6[lane] = df2[lane * 8 + 6];
-                        v7[lane] = df2[lane * 8 + 7];
+                        const int lane8 = lane * 8;
+                        v0[lane] = df2[lane8 + 0];
+                        v1[lane] = df2[lane8 + 1];
+                        v2[lane] = df2[lane8 + 2];
+                        v3[lane] = df2[lane8 + 3];
+                        v4[lane] = df2[lane8 + 4];
+                        v5[lane] = df2[lane8 + 5];
+                        v6[lane] = df2[lane8 + 6];
+                        v7[lane] = df2[lane8 + 7];
                     }
                     
                     simd_double4 t0 = v0 + v4;
@@ -1408,14 +1415,15 @@ protected:
                     simd_double4 out7 = t3 - v3;
                     
                     for (int lane = 0; lane < 4; lane++) {
-                        sf2[lane * 8 + 0] = out0[lane];
-                        sf2[lane * 8 + 1] = out1[lane];
-                        sf2[lane * 8 + 2] = out2[lane];
-                        sf2[lane * 8 + 3] = out3[lane];
-                        sf2[lane * 8 + 4] = out4[lane];
-                        sf2[lane * 8 + 5] = out5[lane];
-                        sf2[lane * 8 + 6] = out6[lane];
-                        sf2[lane * 8 + 7] = out7[lane];
+                        const int lane8 = lane * 8;
+                        sf2[lane8 + 0] = out0[lane];
+                        sf2[lane8 + 1] = out1[lane];
+                        sf2[lane8 + 2] = out2[lane];
+                        sf2[lane8 + 3] = out3[lane];
+                        sf2[lane8 + 4] = out4[lane];
+                        sf2[lane8 + 5] = out5[lane];
+                        sf2[lane8 + 6] = out6[lane];
+                        sf2[lane8 + 7] = out7[lane];
                     }
                 }
             }
@@ -1654,14 +1662,15 @@ protected:
                     
                     simd_double4 v0, v1, v2, v3, v4, v5, v6, v7;
                     for (int lane = 0; lane < 4; lane++) {
-                        v0[lane] = sf2[lane * 8 + 0];
-                        v1[lane] = sf2[lane * 8 + 1];
-                        v2[lane] = sf2[lane * 8 + 2];
-                        v3[lane] = sf2[lane * 8 + 3];
-                        v4[lane] = sf2[lane * 8 + 4];
-                        v5[lane] = sf2[lane * 8 + 5];
-                        v6[lane] = sf2[lane * 8 + 6];
-                        v7[lane] = sf2[lane * 8 + 7];
+                        const int lane8 = lane * 8;
+                        v0[lane] = sf2[lane8 + 0];
+                        v1[lane] = sf2[lane8 + 1];
+                        v2[lane] = sf2[lane8 + 2];
+                        v3[lane] = sf2[lane8 + 3];
+                        v4[lane] = sf2[lane8 + 4];
+                        v5[lane] = sf2[lane8 + 5];
+                        v6[lane] = sf2[lane8 + 6];
+                        v7[lane] = sf2[lane8 + 7];
                     }
                     
                     simd_double4 vr = v1 - v3;
@@ -1677,14 +1686,15 @@ protected:
                     simd_double4 out7 = (vi - vr) * sq2_2;
                     
                     for (int lane = 0; lane < 4; lane++) {
-                        df2[lane * 8 + 0] = out0[lane];
-                        df2[lane * 8 + 1] = out1[lane];
-                        df2[lane * 8 + 2] = out2[lane];
-                        df2[lane * 8 + 3] = out3[lane];
-                        df2[lane * 8 + 4] = out4[lane];
-                        df2[lane * 8 + 5] = out5[lane];
-                        df2[lane * 8 + 6] = out6[lane];
-                        df2[lane * 8 + 7] = out7[lane];
+                        const int lane8 = lane * 8;
+                        df2[lane8 + 0] = out0[lane];
+                        df2[lane8 + 1] = out1[lane];
+                        df2[lane8 + 2] = out2[lane];
+                        df2[lane8 + 3] = out3[lane];
+                        df2[lane8 + 4] = out4[lane];
+                        df2[lane8 + 5] = out5[lane];
+                        df2[lane8 + 6] = out6[lane];
+                        df2[lane8 + 7] = out7[lane];
                     }
                 }
             }
@@ -1721,10 +1731,11 @@ protected:
                     
                     simd_double4 b0_0, b0_2, b1, b3;
                     for (int lane = 0; lane < 4; lane++) {
-                        b0_0[lane] = sf2[lane * 8 + 0] + sf2[lane * 8 + 2];
-                        b0_2[lane] = sf2[lane * 8 + 0] - sf2[lane * 8 + 2];
-                        b1[lane] = sf2[lane * 8 + 1] * c2;
-                        b3[lane] = sf2[lane * 8 + 3] * c2;
+                        const int lane8 = lane * 8;
+                        b0_0[lane] = sf2[lane8 + 0] + sf2[lane8 + 2];
+                        b0_2[lane] = sf2[lane8 + 0] - sf2[lane8 + 2];
+                        b1[lane] = sf2[lane8 + 1] * c2;
+                        b3[lane] = sf2[lane8 + 3] * c2;
                     }
                     
                     simd_double4 out0 = (b0_0 + b1) * vmul;
@@ -1733,10 +1744,11 @@ protected:
                     simd_double4 out3 = (b0_2 - b3) * vmul;
                     
                     for (int lane = 0; lane < 4; lane++) {
-                        x[lut[lane * 8 + 0]] = out0[lane];
-                        x[lut[lane * 8 + 1]] = out1[lane];
-                        x[lut[lane * 8 + 2]] = out2[lane];
-                        x[lut[lane * 8 + 3]] = out3[lane];
+                        const int lane8 = lane * 8;
+                        x[lut[lane8 + 0]] = out0[lane];
+                        x[lut[lane8 + 1]] = out1[lane];
+                        x[lut[lane8 + 2]] = out2[lane];
+                        x[lut[lane8 + 3]] = out3[lane];
                     }
                 }
             }
@@ -7320,7 +7332,6 @@ inline void do_ifft_simd_d1_impl(
 }
 
 } // namespace fft_simd_helpers
-
 
 
 
