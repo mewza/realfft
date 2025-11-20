@@ -5466,14 +5466,13 @@ protected:
 };
 
 
-
 template<typename T, int N>
 class FFTRealHybrid {
 public:
     // --- Type aliases ---
     using T1 = SimdBase<T>;        // scalar base type
     using cmplxTT = cmplxT<T>;     // complex type matching T
-
+    
     // Select the largest backend SIMD type for performance
     static constexpr auto select_backend() {
         if constexpr (std::is_same_v<T,float>) {
@@ -5502,10 +5501,11 @@ public:
     using BT = decltype(select_backend());   // backend type
     using cmplxBT = cmplxT<BT>;             // complex type of backend
 
+    static constexpr int simd_size = SimdSize<BT>; // number of lanes in backend vector
+    static constexpr int simd_N = N / simd_size; // number of backend vectors to hold N elements
+    
     // --- Constructor ---
     FFTRealHybrid() {
-        simd_size = sizeof(BT)/sizeof(T1);
-        simd_N = N / simd_size;
         X.resize(simd_N);
         Y.resize(simd_N);
     }
@@ -5526,8 +5526,6 @@ public:
     void reset() { backend.reset(); }
 
 private:
-    int simd_size;         // number of lanes in backend vector
-    int simd_N;            // number of backend vectors to hold N elements
     std::vector<BT> X, Y;  // input/output buffers
     FFTReal<BT> backend;   // backend FFT
 
