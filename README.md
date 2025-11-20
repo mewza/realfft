@@ -1,7 +1,7 @@
-FFTReal v1.4
+FFTReal v1.5
 ------------
 
-<b>NEW (v1.4):</b> Added FFTRealHybrid auto-optimizer class so you can continue constructing FFTReal with scalars or simd type vectors, and it will auto-optimize it with best possible vector SIMD to get maximum performane. So if you were to pass FFTRealHybrid it would actually process FFTReal internally with simd_float8 but you will see data resulting from forward transform as cmplxT. So, this is essentially an optimizer class for float, simd_float2, simd_float4, double, simd_double2 types utilizing SIMD architecture. 
+<b>NEW (v1.5):</b> Added acceleration using simd_float8 and simd_double4 types for the corresponding scalars float and double.
 
 How to reach me: 
             Dmitry Boldyrev <subband@gmail.com> or 
