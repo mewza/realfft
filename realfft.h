@@ -1,11 +1,11 @@
 //  realfft.h - A highly optimized C++ SIMD vector T templated FFT/iFFT transform
 //  ---
-//  FFTReal v1.3 (C) 2025 Dmitry Boldyrev <subband@gmail.com>
+//  FFTReal v1.4 (C) 2025 Dmitry Boldyrev <subband@gmail.com>
 //  Pascal version (C) 2024 Laurent de Soras <ldesoras@club-internet.fr>
 //  Object Pascal port (C) 2024 Frederic Vanmol <frederic@fruityloops.com>
 //
 //  NOTE: I decided to give away the highly optimized NEON code!  Enjoy, humanity,
-//        and get well!  =)
+//        and get well! 
 
 
 #pragma once
@@ -5464,3 +5464,121 @@ protected:
     
 #endif // USE_NEON
 };
+
+
+
+template<typename T, int N>
+class FFTRealHybrid {
+public:
+    // --- Type aliases ---
+    using T1 = SimdBase<T>;        // scalar base type
+    using cmplxTT = cmplxT<T>;     // complex type matching T
+
+    // Select the largest backend SIMD type for performance
+    static constexpr auto select_backend() {
+        if constexpr (std::is_same_v<T,float>) {
+            // Scalar float → 8-lane SIMD for max performance
+            return simd_float8{};
+        } else if constexpr (std::is_same_v<T,simd_float2> ||
+                             std::is_same_v<T,simd_float4> ||
+                             std::is_same_v<T,simd_float8>) {
+            // Smaller float vectors → upcast to 8-lane SIMD
+            return simd_float8{};
+        } else if constexpr (std::is_same_v<T,double>) {
+            // Scalar double → 4-lane SIMD (double is 2x float size)
+            return simd_double4{};
+        } else if constexpr (std::is_same_v<T,simd_double2> ||
+                             std::is_same_v<T,simd_double4>) {
+            // Smaller double vectors → upcast to 4-lane SIMD
+            return simd_double4{};
+        } else if constexpr (std::is_same_v<T,simd_double8>) {
+            // Already maxed out for double
+            return simd_double8{};
+        } else {
+            static_assert(sizeof(T)==0, "Unsupported type for FFTRealHybrid backend");
+        }
+    }
+
+    using BT = decltype(select_backend());   // backend type
+    using cmplxBT = cmplxT<BT>;             // complex type of backend
+
+    // --- Constructor ---
+    FFTRealHybrid() {
+        simd_size = sizeof(BT)/sizeof(T1);
+        simd_N = N / simd_size;
+        X.resize(simd_N);
+        Y.resize(simd_N);
+    }
+
+    // --- Public API ---
+    void real_fft(const T* in, cmplxTT* out, bool do_scale = false) {
+        pack_input(in);
+        backend.real_fft(X.data(), Y.data(), do_scale);
+        unpack_output(out);
+    }
+
+    void real_ifft(const cmplxTT* in, T* out, bool do_scale = false) {
+        pack_spectrum(in);
+        backend.inverse(Y.data(), X.data(), do_scale);
+        unpack_output(out);
+    }
+
+    void reset() { backend.reset(); }
+
+private:
+    int simd_size;         // number of lanes in backend vector
+    int simd_N;            // number of backend vectors to hold N elements
+    std::vector<BT> X, Y;  // input/output buffers
+    FFTReal<BT> backend;   // backend FFT
+
+    // --- Packing / Unpacking ---
+    void pack_input(const T* in) {
+        for(int i=0; i<simd_N; ++i) {
+            BT v{};
+            for(int j=0; j<simd_size; ++j) {
+                int idx = i*simd_size + j;
+                if(idx < N) v_insert(v, j, in[idx]);
+            }
+            X[i] = v;
+        }
+    }
+
+    void unpack_output(cmplxTT* out){
+        for(int i=0;i<simd_N;i++){
+            BT v = Y[i];
+            for(int j=0;j<simd_size;j++){
+                int idx = i*simd_size + j;
+                if(idx < N) {
+                    out[idx].re = v_extract(v,j);
+                    out[idx].im = T1(0);
+                }
+            }
+        }
+    }
+
+    void pack_spectrum(const cmplxTT* in){
+        for(int i=0;i<simd_N;i++){
+            BT v{};
+            for(int j=0;j<simd_size;j++){
+                int idx = i*simd_size + j;
+                if(idx < N) v_insert(v,j,in[idx].re);
+            }
+            Y[i] = v;
+        }
+    }
+
+    // --- Low-level SIMD helpers ---
+    template<typename V>
+    void v_insert(BT &v,int lane,const V &val){
+        auto tmp = convertvector_safe<BT>(val);
+        int lanes = std::min(SimdSize<BT>, simd_size - lane);
+        for(int k=0;k<lanes;k++){
+            v[k+lane] = tmp[k];
+        }
+    }
+
+    T1 v_extract(const BT &v,int lane) const {
+        return v[lane];
+    }
+};
+
