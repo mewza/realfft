@@ -1,6 +1,6 @@
 //  realfft.h - A highly optimized C++ SIMD vector T templated FFT/iFFT transform
 //  ---
-//  FFTReal v1.4 (C) 2025 Dmitry Boldyrev <subband@gmail.com>
+//  FFTReal v1.5 (C) 2025 Dmitry Boldyrev <subband@gmail.com>
 //  Pascal version (C) 2024 Laurent de Soras <ldesoras@club-internet.fr>
 //  Object Pascal port (C) 2024 Frederic Vanmol <frederic@fruityloops.com>
 //
@@ -15,12 +15,38 @@
 #include "const1.h"
 
 #if !TARGET_OS_MACCATALYST && TARGET_CPU_ARM64 && defined(__ARM_NEON)
-
+#include <simd/simd.h>
 #include <arm_neon.h>
-#define USE_NEON
+
+#define FFT_USE_NEON 1
 #define NEW_NEON_OPT 1
 
-#endif // NEON
+#pragma warning("Compiling with NEON optimizations")
+#endif // TARGET_OS_MACCATALYST
+
+namespace fft_neon_helpers {
+
+void do_fft_neon_f1_impl(const float* x, float* f, int N, int nbr_bits,
+                       const int* bit_rev_lut, float* buffer_ptr,
+                       void* twiddle_cache_ptr);
+
+void do_fft_neon_d1_impl(const double* x, double* f, int N, int nbr_bits,
+                       const int* bit_rev_lut, double* buffer_ptr,
+                       void* twiddle_cache_ptr);
+
+void do_ifft_neon_d1_impl(const double* _Nonnull f, double* _Nonnull x, int N,
+                        int nbr_bits, const int* _Nonnull bit_rev_lut,
+                        double* _Nonnull buffer_ptr,
+                        void* _Nonnull twiddle_cache_ptr,
+                        bool do_scale);
+
+void do_ifft_neon_f1_impl(const float* _Nonnull f, float* _Nonnull x, int N,
+                        int nbr_bits, const int* _Nonnull bit_rev_lut,
+                        float* _Nonnull buffer_ptr,
+                        void* _Nonnull twiddle_cache_ptr,
+                        bool do_scale);
+
+} // namespace fft_neon_helpers
 
 template <typename T>
 class FFTReal
@@ -90,14 +116,19 @@ public:
         T mul = 1.0;
         cmplxT<T> c;
         if (do_scale) {
-            const T mul = 0.5;
             for (int i=0; i < _N; i++) {
-                xx[i] = x[i] * mul;
+                xx[i] = x[i] * 0.5;
             }
         } else {
             memcpy(xx, x, _N * sizeof(T));
         }
-#if USE_NEON
+        if constexpr( std::is_same_v<T, float> ) {
+            fft_neon_helpers::do_fft_neon_f1_impl(xx, yy, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()));
+        }
+        else if constexpr( std::is_same_v<T, double> ) {
+            fft_neon_helpers::do_fft_neon_d1_impl(xx, yy, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()));
+        }
+#if FFT_USE_NEON
         if constexpr( std::is_same_v<T, simd_double8> ) {
             do_fft_neon_d8(xx, yy);
         } else if constexpr( std::is_same_v<T, simd_float8> )
@@ -112,19 +143,20 @@ public:
             do_fft_neon_f2(xx, yy);
         if constexpr( std::is_same_v<T, double> ) {
             do_fft_neon_d1(xx, yy);
-        } else if constexpr( std::is_same_v<T, float> )
+        } else if constexpr( std::is_same_v<T, float> ) {
             do_fft_neon_f1(xx, yy);
-        else
-            do_fft(xx, yy);
-#else
-        do_fft(xx, yy);
+        }
 #endif
+        else {
+            do_fft(xx, yy);
+        }
         if (do_scale) mul *= 1./(T1)_N;
         
-        y[0] = cmplxT<T>(yy[0], 0.0) * mul;
+        y[0] = cmplxT<T>(yy[0], 0.0) * mul;           // DC
         for (int i=1; i < _N2; i++) {
-            y[i] = cmplxT<T>(yy[i], yy[i + _N2]) * mul;
+            y[i] = cmplxT<T>(yy[i], yy[i + _N2]) * mul;  // Regular bins
         }
+        y[_N2] = cmplxT<T>(yy[_N2], 0.0) * mul;       // ✓ Nyquist (same scaling as DC)
     }
     
     // ========================================================================== //
@@ -146,10 +178,15 @@ public:
             yy[ i       ] = x[i].re;
             yy[ i + _N2 ] = x[i].im;
         }
-        yy[   0 ] = x[0].re;
-        yy[ _N2 ] = 0.0;
+        yy[   0 ] = x[0].re;      // DC
+        yy[ _N2 ] = x[_N2].re;    // ✓ Nyquist from input, not forced to 0!
         
-#if USE_NEON
+        if constexpr( std::is_same_v<T, float> ) {
+            fft_neon_helpers::do_ifft_neon_f1_impl(yy, y, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
+        } else if constexpr( std::is_same_v<T, double> ) {
+            fft_neon_helpers::do_ifft_neon_d1_impl(yy, y, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
+        }
+#if FFT_USE_NEON
         if constexpr( std::is_same_v<T, simd_double8> ) {
             do_ifft_neon_d8(yy, y, do_scale);
         } else if constexpr( std::is_same_v<T, simd_float8> )
@@ -164,17 +201,16 @@ public:
             do_ifft_neon_f2(yy, y, do_scale);
         if constexpr( std::is_same_v<T, double> ) {
             do_ifft_neon_d1(yy, y, do_scale);
-        } else if constexpr( std::is_same_v<T, float> )
+        } else if constexpr( std::is_same_v<T, float> ) {
             do_ifft_neon_f1(yy, y, do_scale);
-        else
-            do_ifft(yy, y, do_scale);
-#else
-        do_ifft(yy, y, do_scale);
+        }
 #endif
+        else {
+            do_ifft(yy, y, do_scale);
+        }
     }
     
-    void do_fft(const T *_Nonnull x, T *_Nonnull f)
-    {
+    void do_fft(const T *_Nonnull x, T *_Nonnull f) {
         T1 c, s;
         if (_nbr_bits > 2) {
             T *sf, *df;
@@ -257,8 +293,8 @@ public:
                     for (int j = 1; j < h_nbr_coef; ++j)
                     {
                         // Using twiddle_cache instead of direct access
-                        // const T1 c = cos_ptr [j];                // cos (i*PI/nbr_coef);
-                        // const T1 s = cos_ptr [h_nbr_coef - j];   // sin (i*PI/nbr_coef);
+                        // const T1 c = cos_ptr [j];                // cos (i*M_PI/nbr_coef);
+                        // const T1 s = cos_ptr [h_nbr_coef - j];   // sin (i*M_PI/nbr_coef);
                         
                         _twiddle_cache->get_twiddle(pass, j, c, s);
                         
@@ -303,8 +339,7 @@ public:
         }
     }
     
-    void do_ifft(const T *_Nonnull f, T *_Nonnull x, bool do_scale = false)
-    {
+    void do_ifft(const T *_Nonnull f, T *_Nonnull x, bool do_scale = false) {
         T1 c, s;
         const T1 c2 = 2.0;
         
@@ -460,17 +495,17 @@ public:
             x[0] = f[0] * mul;
         }
     }
-
+    
     FFTReal(FFTReal&& other) noexcept :
-        _nbr_bits(other._nbr_bits),
-        _N2(other._N2),
-        _N(other._N),
-        buffer_ptr(other.buffer_ptr),
-        yy(other.yy),
-        xx(other.xx),
-        _trigo_lut(std::move(other._trigo_lut)),
-        _bit_rev_lut(std::move(other._bit_rev_lut)),
-        _twiddle_cache(std::move(other._twiddle_cache))
+    _nbr_bits(other._nbr_bits),
+    _N2(other._N2),
+    _N(other._N),
+    buffer_ptr(other.buffer_ptr),
+    yy(other.yy),
+    xx(other.xx),
+    _trigo_lut(std::move(other._trigo_lut)),
+    _bit_rev_lut(std::move(other._bit_rev_lut)),
+    _twiddle_cache(std::move(other._twiddle_cache))
     {
         other.buffer_ptr = nullptr;
         other.yy = nullptr;
@@ -504,7 +539,7 @@ public:
     // Delete copy constructor and assignment to avoid double-free issues
     FFTReal(const FFTReal&) = delete;
     FFTReal& operator=(const FFTReal&) = delete;
-   
+    
     inline void do_rescale(T *_Nonnull x) const {
         const T1 mul = 1./(T1)_N;
         for (auto i = 0; i < _N; ++i)
@@ -540,137 +575,6 @@ public:
         }
     }
     
-protected:
-    
-    class trigo_lookup {
-    protected:
-        int*_Nullable offsets = nullptr;
-        T1*_Nullable cos_data = nullptr;
-        int nbr_bits = 0;
-    public:
-        trigo_lookup(int bits) : nbr_bits(bits) {
-            int total_coef = 0;
-            
-            // Allocate with alignment
-            offsets = FFTReal::alignedAlloc<int>(nbr_bits + 1);
-            
-            // Calculate total size needed
-            for (int pass = 0; pass < nbr_bits; pass++) {
-                offsets[pass] = total_coef;
-                int nbr_coef = 1 << pass;
-                total_coef += nbr_coef;
-            }
-            offsets[nbr_bits] = total_coef;
-            
-            cos_data = FFTReal::alignedAlloc<T1>(total_coef);
-            
-            // Calculate and store trig values in flat array
-            for (int pass = 0; pass < nbr_bits; pass++) {
-                int nbr_coef = 1 << pass;
-                int offset = offsets[pass];
-                
-                // Calculate and store the cosine values
-                for (int i = 0; i < nbr_coef; i++) {
-                    cos_data[offset + i] = F_COS((i * M_PI) / nbr_coef);
-                }
-            }
-        }
-        
-        ~trigo_lookup() {
-            FFTReal::alignedFree(offsets);
-            FFTReal::alignedFree(cos_data);
-        }
-        
-        // Get pointer to the cosine values for a specific pass
-        inline const T1*_Nullable get_ptr(int pass) const {
-            return &cos_data[ offsets[pass] ];
-        }
-        
-        trigo_lookup(trigo_lookup&& other) noexcept :
-            nbr_bits(other.nbr_bits),
-            offsets(other.offsets),
-            cos_data(other.cos_data)
-        {
-            other.nbr_bits = 0;
-            other.offsets = nullptr;
-            other.cos_data = nullptr;
-        }
-        
-        // Implement move assignment
-        trigo_lookup& operator=(trigo_lookup&& other) noexcept {
-            if (this != &other) {
-                alignedFree(offsets);
-                alignedFree(cos_data);
-                
-                nbr_bits = other.nbr_bits;
-                offsets = std::move(other.offsets);
-                cos_data = std::move(other.cos_data);
-                
-                nbr_bits = 0;
-                other.offsets = nullptr;
-                other.cos_data = nullptr;
-            }
-            return *this;
-        }
-        
-        // Delete copy constructor and assignment to avoid double-free issues
-        trigo_lookup(const trigo_lookup&) = delete;
-        trigo_lookup& operator=(const trigo_lookup&) = delete;
-    };
-
-    class bit_rev_lut {
-    protected:
-        int *_Nullable indices{nullptr};
-        int N{0}, nbr_bits{0};
-    public:
-        bit_rev_lut(int bits, int n) : nbr_bits(bits), N(n) {
-            indices = FFTReal::alignedAlloc<int>(N);
-            for (int i = 0; i < N; i++) {
-                int rev = 0;
-                for (int j = 0; j < nbr_bits; j++) {
-                    if (i & (1 << j)) rev |= (1 << (nbr_bits - 1 - j));
-                }
-                indices[i] = rev;
-            }
-        }
-        inline const int*_Nullable get_ptr() const {
-            return indices;
-        }
-        
-        bit_rev_lut(bit_rev_lut&& other) noexcept :
-            nbr_bits(other.nbr_bits),
-            N(other.N),
-            indices(std::move(other.indices))
-        {
-            other.nbr_bits = 0;
-            other.N = 0;
-            other.indices = nullptr;
-        }
-        
-        // Implement move assignment
-        bit_rev_lut& operator=(bit_rev_lut&& other) noexcept {
-            if (this != &other) {
-                alignedFree(indices);
-                
-                nbr_bits = other.nbr_bits;
-                N = other.N;
-                indices = std::move(other.indices);
-                
-                nbr_bits = 0;
-                N = 0;
-                other.indices = nullptr;
-            }
-            return *this;
-        }
-        
-        // Delete copy constructor and assignment to avoid double-free issues
-        bit_rev_lut(const bit_rev_lut&) = delete;
-        bit_rev_lut& operator=(const bit_rev_lut&) = delete;
-        
-        ~bit_rev_lut() {
-            FFTReal::alignedFree(indices);
-        }
-    };
     
     class twiddle_cache {
     protected:
@@ -722,7 +626,7 @@ protected:
         {
             other.nbr_bits = 0;
             other.N2 = 0;
-            other.offsets = nullptr;
+            // other.offsets = nullptr;
             other.cos_data = nullptr;
         }
         
@@ -758,13 +662,1267 @@ protected:
         }
     };
     
+    
+protected:
+    
+    // SIMD-Accelerated Helper Functions for FFTReal<float>
+    // These operate on 8 consecutive samples using simd_float8 internally
+    
+    static inline void butterfly_8way(float* a, float* b, int stride) {
+        // Load 8 consecutive samples from each array
+        simd_float8 va, vb;
+        for (int i = 0; i < 8; i++) {
+            va[i] = a[i * stride];
+            vb[i] = b[i * stride];
+        }
+        
+        // Compute butterfly: (a+b, a-b)
+        simd_float8 sum = va + vb;
+        simd_float8 diff = va - vb;
+        
+        // Store back
+        for (int i = 0; i < 8; i++) {
+            a[i * stride] = sum[i];
+            b[i * stride] = diff[i];
+        }
+    }
+    
+    static inline void complex_mul_8way(
+                                        float* re_out, float* im_out,
+                                        const float* re_a, const float* im_a,
+                                        const float* re_b, const float* im_b,
+                                        int stride)
+    {
+        simd_float8 vra, via, vrb, vib;
+        
+        // Load 8 values
+        for (int i = 0; i < 8; i++) {
+            vra[i] = re_a[i * stride];
+            via[i] = im_a[i * stride];
+            vrb[i] = re_b[i * stride];
+            vib[i] = im_b[i * stride];
+        }
+        
+        // Complex multiply: (a.re + i*a.im) * (b.re + i*b.im)
+        // = (a.re*b.re - a.im*b.im) + i*(a.re*b.im + a.im*b.re)
+        simd_float8 re_result = vra * vrb - via * vib;
+        simd_float8 im_result = vra * vib + via * vrb;
+        
+        // Store back
+        for (int i = 0; i < 8; i++) {
+            re_out[i * stride] = re_result[i];
+            im_out[i * stride] = im_result[i];
+        }
+    }
+    
+    static inline void apply_twiddle_8way(
+                                          float* re, float* im,
+                                          const T1* cos_ptr, const T1* sin_ptr,
+                                          int offset, int stride)
+    {
+        simd_float8 vre, vim, vcos, vsin;
+        
+        // Load 8 consecutive complex values and twiddle factors
+        for (int i = 0; i < 8; i++) {
+            vre[i] = re[(offset + i) * stride];
+            vim[i] = im[(offset + i) * stride];
+            vcos[i] = cos_ptr[offset + i];
+            vsin[i] = sin_ptr[offset + i];
+        }
+        
+        // Complex multiply by twiddle: (re + i*im) * (cos - i*sin)
+        simd_float8 re_result = vre * vcos + vim * vsin;
+        simd_float8 im_result = vim * vcos - vre * vsin;
+        
+        // Store back
+        for (int i = 0; i < 8; i++) {
+            re[(offset + i) * stride] = re_result[i];
+            im[(offset + i) * stride] = im_result[i];
+        }
+    }
+    
+    void do_fft_simd_f1_accel(const float*__restrict x, float*__restrict f) {
+        T1 c, s;
+        
+        if (_nbr_bits > 2) {
+            float *sf, *df;
+            if (_nbr_bits & 1) {
+                df = buffer_ptr;
+                sf = f;
+            } else {
+                df = f;
+                sf = buffer_ptr;
+            }
+            
+            // First and second pass - Vectorized bit-reversal + radix-4
+            
+            auto lut = _bit_rev_lut->get_ptr();
+            
+            // Process in blocks of 8 radix-4 butterflies (32 samples at once)
+            int i;
+            for (i = 0; i + 32 <= _N; i += 32) {
+                // Use simd_float8 to process 8 radix-4 butterflies at once
+                float x0_arr[8], x1_arr[8], x2_arr[8], x3_arr[8];
+                for (int j = 0; j < 8; j++) {
+                    int idx = i + j * 4;
+                    x0_arr[j] = x[lut[idx]];
+                    x1_arr[j] = x[lut[idx + 1]];
+                    x2_arr[j] = x[lut[idx + 2]];
+                    x3_arr[j] = x[lut[idx + 3]];
+                }
+                simd_float8 x0 = *((simd_float8*)x0_arr);
+                simd_float8 x1 = *((simd_float8*)x1_arr);
+                simd_float8 x2 = *((simd_float8*)x2_arr);
+                simd_float8 x3 = *((simd_float8*)x3_arr);
+                
+                // Radix-4 butterfly (vectorized for 8 butterflies)
+                simd_float8 t0 = x0 + x2;
+                simd_float8 t1 = x1 + x3;
+                simd_float8 t2 = x0 - x2;
+                simd_float8 t3 = x1 - x3;
+                
+                simd_float8 out0 = t0 + t1;
+                simd_float8 out2 = t0 - t1;
+                simd_float8 out1 = t2;
+                simd_float8 out3 = t3;
+                
+                // Store results
+                for (int j = 0; j < 8; j++) {
+                    int idx = i + j * 4;
+                    df[idx]     = out0[j];
+                    df[idx + 1] = out1[j];
+                    df[idx + 2] = out2[j];
+                    df[idx + 3] = out3[j];
+                }
+            }
+            
+            // Handle remaining elements with scalar code
+            for (; i < _N; i += 4) {
+                auto df2 = &df[i];
+                auto x0 = x[lut[i]];
+                auto x1 = x[lut[i + 1]];
+                auto x2 = x[lut[i + 2]];
+                auto x3 = x[lut[i + 3]];
+                
+                df2[0] = x0 + x1 + x2 + x3;
+                df2[1] = x0 - x1;
+                df2[2] = x0 + x1 - x2 - x3;
+                df2[3] = x2 - x3;
+            }
+            
+            // Third pass - Vectorized radix-8
+            
+            const float SQ2_2_f = SQ2_2;
+            
+            for (i = 0; i + 64 <= _N; i += 64) {
+                // Process 8 radix-8 butterflies at once (64 samples)
+                for (int block = 0; block < 8; block++) {
+                    int base = i + block * 8;
+                    auto sf2 = &sf[base];
+                    auto df2 = &df[base];
+                    
+                    simd_float8 v0, v1, v2, v3, v4, v5, v6, v7;
+                    for (int lane = 0; lane < 8; lane++) {
+                        v0[lane] = df2[lane * 8 + 0];
+                        v1[lane] = df2[lane * 8 + 1];
+                        v2[lane] = df2[lane * 8 + 2];
+                        v3[lane] = df2[lane * 8 + 3];
+                        v4[lane] = df2[lane * 8 + 4];
+                        v5[lane] = df2[lane * 8 + 5];
+                        v6[lane] = df2[lane * 8 + 6];
+                        v7[lane] = df2[lane * 8 + 7];
+                    }
+                    
+                    simd_float8 t0 = v0 + v4;
+                    simd_float8 t1 = v0 - v4;
+                    simd_float8 t2 = (v5 - v7) * SQ2_2_f;
+                    simd_float8 t3 = (v5 + v7) * SQ2_2_f;
+                    
+                    simd_float8 out0 = t0;
+                    simd_float8 out4 = t1;
+                    simd_float8 out2 = v2;
+                    simd_float8 out6 = v6;
+                    simd_float8 out1 = v1 + t2;
+                    simd_float8 out3 = v1 - t2;
+                    simd_float8 out5 = t3 + v3;
+                    simd_float8 out7 = t3 - v3;
+                    
+                    for (int lane = 0; lane < 8; lane++) {
+                        sf2[lane * 8 + 0] = out0[lane];
+                        sf2[lane * 8 + 1] = out1[lane];
+                        sf2[lane * 8 + 2] = out2[lane];
+                        sf2[lane * 8 + 3] = out3[lane];
+                        sf2[lane * 8 + 4] = out4[lane];
+                        sf2[lane * 8 + 5] = out5[lane];
+                        sf2[lane * 8 + 6] = out6[lane];
+                        sf2[lane * 8 + 7] = out7[lane];
+                    }
+                }
+            }
+            
+            // Scalar fallback for remainder
+            for (; i < _N; i += 8) {
+                auto sf2 = &sf[i];
+                auto df2 = &df[i];
+                
+                sf2[0] = df2[0] + df2[4];
+                sf2[4] = df2[0] - df2[4];
+                sf2[2] = df2[2];
+                sf2[6] = df2[6];
+                
+                float v = (df2[5] - df2[7]) * SQ2_2_f;
+                sf2[1] = df2[1] + v;
+                sf2[3] = df2[1] - v;
+                
+                v = (df2[5] + df2[7]) * SQ2_2_f;
+                sf2[5] = v + df2[3];
+                sf2[7] = v - df2[3];
+            }
+            
+            // Remaining passes with twiddle factors
+            
+            for (auto pass = 3; pass < _nbr_bits; ++pass) {
+                auto nbr_coef = 1 << pass;
+                auto h_nbr_coef = nbr_coef >> 1;
+                auto d_nbr_coef = nbr_coef << 1;
+                
+                for (auto i = 0; i < _N; i += d_nbr_coef) {
+                    auto sf1r = sf + i;
+                    auto sf2r = sf1r + nbr_coef;
+                    auto dfr = df + i;
+                    auto dfi = dfr + nbr_coef;
+                    
+                    // Extreme coefficients (always real)
+                    dfr[0] = sf1r[0] + sf2r[0];
+                    dfi[0] = sf1r[0] - sf2r[0];
+                    dfr[h_nbr_coef] = sf1r[h_nbr_coef];
+                    dfi[h_nbr_coef] = sf2r[h_nbr_coef];
+                    
+                    // Conjugate complex numbers - vectorized inner loop
+                    auto sf1i = &sf1r[h_nbr_coef];
+                    auto sf2i = &sf1i[nbr_coef];
+                    
+                    int j;
+                    for (j = 1; j + 8 <= h_nbr_coef; j += 8) {
+                        simd_float8 vcos, vsin;
+                        simd_float8 sf1r_v, sf1i_v, sf2r_v, sf2i_v;
+                        
+                        // Load 8 values
+                        for (int k = 0; k < 8; k++) {
+                            _twiddle_cache->get_twiddle(pass, j + k, c, s);
+                            vcos[k] = c;
+                            vsin[k] = s;
+                            sf1r_v[k] = sf1r[j + k];
+                            sf1i_v[k] = sf1i[j + k];
+                            sf2r_v[k] = sf2r[j + k];
+                            sf2i_v[k] = sf2i[j + k];
+                        }
+                        
+                        // Complex multiply: sf2 * twiddle
+                        simd_float8 vr = sf2r_v * vcos - sf2i_v * vsin;
+                        simd_float8 vi = sf2r_v * vsin + sf2i_v * vcos;
+                        
+                        // Butterfly
+                        simd_float8 dfr_pos = sf1r_v + vr;
+                        simd_float8 dfr_neg = sf1r_v - vr;
+                        simd_float8 dfi_pos = vi + sf1i_v;
+                        simd_float8 dfi_neg = vi - sf1i_v;
+                        
+                        // Store 8 results
+                        for (int k = 0; k < 8; k++) {
+                            dfr[j + k] = dfr_pos[k];
+                            dfi[-(j + k)] = dfr_neg[k];
+                            dfi[j + k] = dfi_pos[k];
+                            dfi[nbr_coef - (j + k)] = dfi_neg[k];
+                        }
+                    }
+                    
+                    // Handle remainder with scalar code
+                    for (; j < h_nbr_coef; ++j) {
+                        _twiddle_cache->get_twiddle(pass, j, c, s);
+                        
+                        float v = sf2r[j] * c - sf2i[j] * s;
+                        dfr[j] = sf1r[j] + v;
+                        dfi[-j] = sf1r[j] - v;
+                        
+                        v = sf2r[j] * s + sf2i[j] * c;
+                        dfi[j] = v + sf1i[j];
+                        dfi[nbr_coef - j] = v - sf1i[j];
+                    }
+                }
+                
+                // Swap buffers
+                auto tmp = df;
+                df = sf;
+                sf = tmp;
+            }
+        }
+        else if (_nbr_bits == 2) {
+            // 4-point FFT (scalar)
+            f[1] = x[0] - x[2];
+            f[3] = x[1] - x[3];
+            const float b_0 = x[0] + x[2];
+            const float b_2 = x[1] + x[3];
+            f[0] = b_0 + b_2;
+            f[2] = b_0 - b_2;
+        }
+        else if (_nbr_bits == 1) {
+            // 2-point FFT
+            f[0] = x[0] + x[1];
+            f[1] = x[0] - x[1];
+        }
+        else {
+            // 1-point FFT
+            f[0] = x[0];
+        }
+    }
+    
+    void do_ifft_simd_f1_accel(const float* f, float* x, bool do_scale) {
+        T1 c, s;
+        const float c2 = 2.0f;
+        float mul = 1.0f;
+        if (do_scale) mul = 1.0f / static_cast<float>(_N);
+        
+        if (_nbr_bits > 2) {
+            float* sf = const_cast<float*>(f);
+            float* df;
+            float* df_temp;
+            
+            if (_nbr_bits & 1) {
+                df = buffer_ptr;
+                df_temp = x;
+            } else {
+                df = x;
+                df_temp = buffer_ptr;
+            }
+            
+            // ================================================================
+            // Inverse passes with vectorization
+            // ================================================================
+            for (auto pass = _nbr_bits - 1; pass >= 3; --pass) {
+                auto nbr_coef = 1 << pass;
+                auto h_nbr_coef = nbr_coef >> 1;
+                auto d_nbr_coef = nbr_coef << 1;
+                
+                for (auto i = 0; i < _N; i += d_nbr_coef) {
+                    auto sfr = &sf[i];
+                    auto sfi = &sfr[nbr_coef];
+                    auto df1r = &df[i];
+                    auto df2r = &df1r[nbr_coef];
+                    
+                    df1r[0] = sfr[0] + sfr[nbr_coef];
+                    df2r[0] = sfr[0] - sfr[nbr_coef];
+                    df1r[h_nbr_coef] = sfr[h_nbr_coef] * c2;
+                    df2r[h_nbr_coef] = sfi[h_nbr_coef] * c2;
+                    
+                    auto df1i = &df1r[h_nbr_coef];
+                    auto df2i = &df1i[nbr_coef];
+                    
+                    // Vectorized loop
+                    int j;
+                    for (j = 1; j + 8 <= h_nbr_coef; j += 8) {
+                        simd_float8 vcos, vsin;
+                        simd_float8 sfr_v, sfi_v, sfi_neg_v, sfi_conj_v;
+                        
+                        for (int k = 0; k < 8; k++) {
+                            _twiddle_cache->get_twiddle(pass, j + k, c, s);
+                            vcos[k] = c;
+                            vsin[k] = s;
+                            sfr_v[k] = sfr[j + k];
+                            sfi_v[k] = sfi[j + k];
+                            sfi_neg_v[k] = sfi[-(j + k)];
+                            sfi_conj_v[k] = sfi[nbr_coef - (j + k)];
+                        }
+                        
+                        simd_float8 df1r_v = sfr_v + sfi_neg_v;
+                        simd_float8 df1i_v = sfi_v - sfi_conj_v;
+                        
+                        simd_float8 vr = sfr_v - sfi_neg_v;
+                        simd_float8 vi = sfi_v + sfi_conj_v;
+                        
+                        simd_float8 df2r_v = vr * vcos + vi * vsin;
+                        simd_float8 df2i_v = vi * vcos - vr * vsin;
+                        
+                        for (int k = 0; k < 8; k++) {
+                            df1r[j + k] = df1r_v[k];
+                            df1i[j + k] = df1i_v[k];
+                            df2r[j + k] = df2r_v[k];
+                            df2i[j + k] = df2i_v[k];
+                        }
+                    }
+                    
+                    // Scalar remainder
+                    for (; j < h_nbr_coef; ++j) {
+                        df1r[j] = sfr[j] + sfi[-j];
+                        df1i[j] = sfi[j] - sfi[nbr_coef - j];
+                        
+                        _twiddle_cache->get_twiddle(pass, j, c, s);
+                        
+                        auto vr = sfr[j] - sfi[-j];
+                        auto vi = sfi[j] + sfi[nbr_coef - j];
+                        
+                        df2r[j] = vr * c + vi * s;
+                        df2i[j] = vi * c - vr * s;
+                    }
+                }
+                
+                if (pass < _nbr_bits - 1) {
+                    auto tmp = df;
+                    df = sf;
+                    sf = tmp;
+                } else {
+                    sf = df;
+                    df = df_temp;
+                }
+            }
+            
+            // Final passes with scaling - vectorized
+            const float sq2_2 = SQ2_2;
+            
+            for (auto i = 0; i + 64 <= _N; i += 64) {
+                // Process 8 blocks of 8 samples (64 total) with SIMD
+                simd_float8 vmul;
+                for (int k = 0; k < 8; k++) vmul[k] = mul;
+                
+                for (int block = 0; block < 8; block++) {
+                    int base = i + block * 8;
+                    auto df2 = &df[base];
+                    auto sf2 = &sf[base];
+                    
+                    simd_float8 v0, v1, v2, v3, v4, v5, v6, v7;
+                    for (int lane = 0; lane < 8; lane++) {
+                        v0[lane] = sf2[lane * 8 + 0];
+                        v1[lane] = sf2[lane * 8 + 1];
+                        v2[lane] = sf2[lane * 8 + 2];
+                        v3[lane] = sf2[lane * 8 + 3];
+                        v4[lane] = sf2[lane * 8 + 4];
+                        v5[lane] = sf2[lane * 8 + 5];
+                        v6[lane] = sf2[lane * 8 + 6];
+                        v7[lane] = sf2[lane * 8 + 7];
+                    }
+                    
+                    simd_float8 vr = v1 - v3;
+                    simd_float8 vi = v5 + v7;
+                    
+                    simd_float8 out0 = v0 + v4;
+                    simd_float8 out1 = v1 + v3;
+                    simd_float8 out2 = v2 * c2;
+                    simd_float8 out3 = v5 - v7;
+                    simd_float8 out4 = v0 - v4;
+                    simd_float8 out5 = (vr + vi) * sq2_2;
+                    simd_float8 out6 = v6 * c2;
+                    simd_float8 out7 = (vi - vr) * sq2_2;
+                    
+                    for (int lane = 0; lane < 8; lane++) {
+                        df2[lane * 8 + 0] = out0[lane];
+                        df2[lane * 8 + 1] = out1[lane];
+                        df2[lane * 8 + 2] = out2[lane];
+                        df2[lane * 8 + 3] = out3[lane];
+                        df2[lane * 8 + 4] = out4[lane];
+                        df2[lane * 8 + 5] = out5[lane];
+                        df2[lane * 8 + 6] = out6[lane];
+                        df2[lane * 8 + 7] = out7[lane];
+                    }
+                }
+            }
+            
+            // Scalar remainder for last pass
+            for (auto i = 0; i < _N; i += 8) {
+                auto df2 = &df[i];
+                auto sf2 = &sf[i];
+                
+                auto vr = sf2[1] - sf2[3];
+                auto vi = sf2[5] + sf2[7];
+                
+                df2[0] = sf2[0] + sf2[4];
+                df2[1] = sf2[1] + sf2[3];
+                df2[2] = sf2[2] * c2;
+                df2[3] = sf2[5] - sf2[7];
+                df2[4] = sf2[0] - sf2[4];
+                df2[5] = (vr + vi) * sq2_2;
+                df2[6] = sf2[6] * c2;
+                df2[7] = (vi - vr) * sq2_2;
+            }
+            
+            // Final bit-reversal with vectorized scaling
+            auto lut_ptr = _bit_rev_lut->get_ptr();
+            simd_float8 vmul;
+            for (int k = 0; k < 8; k++) vmul[k] = mul;
+            
+            for (auto i = 0; i + 64 <= _N; i += 64) {
+                // Process 8 radix-4 butterflies at once
+                for (int group = 0; group < 8; group++) {
+                    int base = i + group * 8;
+                    auto lut = lut_ptr + base;
+                    auto sf2 = &df[base];
+                    
+                    simd_float8 b0_0, b0_2, b1, b3;
+                    for (int lane = 0; lane < 8; lane++) {
+                        b0_0[lane] = sf2[lane * 8 + 0] + sf2[lane * 8 + 2];
+                        b0_2[lane] = sf2[lane * 8 + 0] - sf2[lane * 8 + 2];
+                        b1[lane] = sf2[lane * 8 + 1] * c2;
+                        b3[lane] = sf2[lane * 8 + 3] * c2;
+                    }
+                    
+                    simd_float8 out0 = (b0_0 + b1) * vmul;
+                    simd_float8 out1 = (b0_0 - b1) * vmul;
+                    simd_float8 out2 = (b0_2 + b3) * vmul;
+                    simd_float8 out3 = (b0_2 - b3) * vmul;
+                    
+                    for (int lane = 0; lane < 8; lane++) {
+                        x[lut[lane * 8 + 0]] = out0[lane];
+                        x[lut[lane * 8 + 1]] = out1[lane];
+                        x[lut[lane * 8 + 2]] = out2[lane];
+                        x[lut[lane * 8 + 3]] = out3[lane];
+                    }
+                }
+            }
+            
+            // Scalar remainder
+            for (auto i = 0; i < _N; i += 8) {
+                auto lut = lut_ptr + i;
+                auto sf2 = &df[i];
+                
+                auto b_0 = sf2[0] + sf2[2];
+                auto b_2 = sf2[0] - sf2[2];
+                auto b_1 = sf2[1] * c2;
+                auto b_3 = sf2[3] * c2;
+                
+                x[lut[0]] = (b_0 + b_1) * mul;
+                x[lut[1]] = (b_0 - b_1) * mul;
+                x[lut[2]] = (b_2 + b_3) * mul;
+                x[lut[3]] = (b_2 - b_3) * mul;
+                
+                b_0 = sf2[4] + sf2[6];
+                b_2 = sf2[4] - sf2[6];
+                b_1 = sf2[5] * c2;
+                b_3 = sf2[7] * c2;
+                
+                x[lut[4]] = (b_0 + b_1) * mul;
+                x[lut[5]] = (b_0 - b_1) * mul;
+                x[lut[6]] = (b_2 + b_3) * mul;
+                x[lut[7]] = (b_2 - b_3) * mul;
+            }
+        }
+        else if (_nbr_bits == 2) {
+            const float b_0 = f[0] + f[2];
+            const float b_2 = f[0] - f[2];
+            x[0] = (b_0 + f[1] * c2) * mul;
+            x[2] = (b_0 - f[1] * c2) * mul;
+            x[1] = (b_2 + f[3] * c2) * mul;
+            x[3] = (b_2 - f[3] * c2) * mul;
+        }
+        else if (_nbr_bits == 1) {
+            x[0] = (f[0] + f[1]) * mul;
+            x[1] = (f[0] - f[1]) * mul;
+        }
+        else {
+            x[0] = f[0] * mul;
+        }
+    }
+    
+    // Helper: Process 4-way vectorized butterfly (for double)
+    
+    static inline void butterfly_4way_d(double* a, double* b, int stride) {
+        // Load 4 consecutive samples from each array
+        simd_double4 va, vb;
+        for (int i = 0; i < 4; i++) {
+            va[i] = a[i * stride];
+            vb[i] = b[i * stride];
+        }
+        
+        // Compute butterfly: (a+b, a-b)
+        simd_double4 sum = va + vb;
+        simd_double4 diff = va - vb;
+        
+        // Store back
+        for (int i = 0; i < 4; i++) {
+            a[i * stride] = sum[i];
+            b[i * stride] = diff[i];
+        }
+    }
+    
+    
+    // Helper: Vectorized complex multiply (4 complex pairs at once)
+    
+    static inline void complex_mul_4way_d(
+                                          double* re_out, double* im_out,
+                                          const double* re_a, const double* im_a,
+                                          const double* re_b, const double* im_b,
+                                          int stride)
+    {
+        simd_double4 vra, via, vrb, vib;
+        
+        // Load 4 values
+        for (int i = 0; i < 4; i++) {
+            vra[i] = re_a[i * stride];
+            via[i] = im_a[i * stride];
+            vrb[i] = re_b[i * stride];
+            vib[i] = im_b[i * stride];
+        }
+        
+        // Complex multiply: (a.re + i*a.im) * (b.re + i*b.im)
+        // = (a.re*b.re - a.im*b.im) + i*(a.re*b.im + a.im*b.re)
+        simd_double4 re_result = vra * vrb - via * vib;
+        simd_double4 im_result = vra * vib + via * vrb;
+        
+        // Store back
+        for (int i = 0; i < 4; i++) {
+            re_out[i * stride] = re_result[i];
+            im_out[i * stride] = im_result[i];
+        }
+    }
+    
+    // Helper: Vectorized twiddle factor application
+    
+    static inline void apply_twiddle_4way_d(
+                                            double* re, double* im,
+                                            const T1* cos_ptr, const T1* sin_ptr,
+                                            int offset, int stride)
+    {
+        simd_double4 vre, vim, vcos, vsin;
+        
+        // Load 4 consecutive complex values and twiddle factors
+        for (int i = 0; i < 4; i++) {
+            vre[i] = re[(offset + i) * stride];
+            vim[i] = im[(offset + i) * stride];
+            vcos[i] = cos_ptr[offset + i];
+            vsin[i] = sin_ptr[offset + i];
+        }
+        
+        // Complex multiply by twiddle: (re + i*im) * (cos - i*sin)
+        simd_double4 re_result = vre * vcos + vim * vsin;
+        simd_double4 im_result = vim * vcos - vre * vsin;
+        
+        // Store back
+        for (int i = 0; i < 4; i++) {
+            re[(offset + i) * stride] = re_result[i];
+            im[(offset + i) * stride] = im_result[i];
+        }
+    }
+    
+    
+    // SIMD-Accelerated Forward FFT for double
+    
+    void do_fft_simd_d1_accel(const double* x, double* f) {
+        T1 c, s;
+        
+        if (_nbr_bits > 2) {
+            double *sf, *df;
+            if (_nbr_bits & 1) {
+                df = buffer_ptr;
+                sf = f;
+            } else {
+                df = f;
+                sf = buffer_ptr;
+            }
+            
+            // First and second pass - Vectorized bit-reversal + radix-4
+            
+            auto lut = _bit_rev_lut->get_ptr();
+            
+            // Process in blocks of 4 radix-4 butterflies (16 samples at once)
+            int i;
+            for (i = 0; i + 16 <= _N; i += 16) {
+                // Use simd_double4 to process 4 radix-4 butterflies at once
+                simd_double4 x0, x1, x2, x3;
+                
+                for (int j = 0; j < 4; j++) {
+                    int idx = i + j * 4;
+                    x0[j] = x[lut[idx]];
+                    x1[j] = x[lut[idx + 1]];
+                    x2[j] = x[lut[idx + 2]];
+                    x3[j] = x[lut[idx + 3]];
+                }
+                
+                // Radix-4 butterfly (vectorized for 4 butterflies)
+                simd_double4 t0 = x0 + x2;
+                simd_double4 t1 = x1 + x3;
+                simd_double4 t2 = x0 - x2;
+                simd_double4 t3 = x1 - x3;
+                
+                simd_double4 out0 = t0 + t1;
+                simd_double4 out2 = t0 - t1;
+                simd_double4 out1 = t2;
+                simd_double4 out3 = t3;
+                
+                // Store results
+                for (int j = 0; j < 4; j++) {
+                    int idx = i + j * 4;
+                    df[idx]     = out0[j];
+                    df[idx + 1] = out1[j];
+                    df[idx + 2] = out2[j];
+                    df[idx + 3] = out3[j];
+                }
+            }
+            
+            // Handle remaining elements with scalar code
+            for (; i < _N; i += 4) {
+                auto df2 = &df[i];
+                auto x0 = x[lut[i]];
+                auto x1 = x[lut[i + 1]];
+                auto x2 = x[lut[i + 2]];
+                auto x3 = x[lut[i + 3]];
+                
+                df2[0] = x0 + x1 + x2 + x3;
+                df2[1] = x0 - x1;
+                df2[2] = x0 + x1 - x2 - x3;
+                df2[3] = x2 - x3;
+            }
+            
+            // Third pass - Vectorized radix-8
+            
+            const double SQ2_2_d = SQ2_2;
+            
+            for (i = 0; i + 32 <= _N; i += 32) {
+                // Process 4 radix-8 butterflies at once (32 samples)
+                for (int block = 0; block < 4; block++) {
+                    int base = i + block * 8;
+                    auto sf2 = &sf[base];
+                    auto df2 = &df[base];
+                    
+                    simd_double4 v0, v1, v2, v3, v4, v5, v6, v7;
+                    for (int lane = 0; lane < 4; lane++) {
+                        v0[lane] = df2[lane * 8 + 0];
+                        v1[lane] = df2[lane * 8 + 1];
+                        v2[lane] = df2[lane * 8 + 2];
+                        v3[lane] = df2[lane * 8 + 3];
+                        v4[lane] = df2[lane * 8 + 4];
+                        v5[lane] = df2[lane * 8 + 5];
+                        v6[lane] = df2[lane * 8 + 6];
+                        v7[lane] = df2[lane * 8 + 7];
+                    }
+                    
+                    simd_double4 t0 = v0 + v4;
+                    simd_double4 t1 = v0 - v4;
+                    simd_double4 t2 = (v5 - v7) * SQ2_2_d;
+                    simd_double4 t3 = (v5 + v7) * SQ2_2_d;
+                    
+                    simd_double4 out0 = t0;
+                    simd_double4 out4 = t1;
+                    simd_double4 out2 = v2;
+                    simd_double4 out6 = v6;
+                    simd_double4 out1 = v1 + t2;
+                    simd_double4 out3 = v1 - t2;
+                    simd_double4 out5 = t3 + v3;
+                    simd_double4 out7 = t3 - v3;
+                    
+                    for (int lane = 0; lane < 4; lane++) {
+                        sf2[lane * 8 + 0] = out0[lane];
+                        sf2[lane * 8 + 1] = out1[lane];
+                        sf2[lane * 8 + 2] = out2[lane];
+                        sf2[lane * 8 + 3] = out3[lane];
+                        sf2[lane * 8 + 4] = out4[lane];
+                        sf2[lane * 8 + 5] = out5[lane];
+                        sf2[lane * 8 + 6] = out6[lane];
+                        sf2[lane * 8 + 7] = out7[lane];
+                    }
+                }
+            }
+            
+            // Scalar fallback for remainder
+            for (; i < _N; i += 8) {
+                auto sf2 = &sf[i];
+                auto df2 = &df[i];
+                
+                sf2[0] = df2[0] + df2[4];
+                sf2[4] = df2[0] - df2[4];
+                sf2[2] = df2[2];
+                sf2[6] = df2[6];
+                
+                double v = (df2[5] - df2[7]) * SQ2_2_d;
+                sf2[1] = df2[1] + v;
+                sf2[3] = df2[1] - v;
+                
+                v = (df2[5] + df2[7]) * SQ2_2_d;
+                sf2[5] = v + df2[3];
+                sf2[7] = v - df2[3];
+            }
+            
+            // Remaining passes with twiddle factors
+            
+            for (auto pass = 3; pass < _nbr_bits; ++pass) {
+                auto nbr_coef = 1 << pass;
+                auto h_nbr_coef = nbr_coef >> 1;
+                auto d_nbr_coef = nbr_coef << 1;
+                
+                for (auto i = 0; i < _N; i += d_nbr_coef) {
+                    auto sf1r = sf + i;
+                    auto sf2r = sf1r + nbr_coef;
+                    auto dfr = df + i;
+                    auto dfi = dfr + nbr_coef;
+                    
+                    // Extreme coefficients (always real)
+                    dfr[0] = sf1r[0] + sf2r[0];
+                    dfi[0] = sf1r[0] - sf2r[0];
+                    dfr[h_nbr_coef] = sf1r[h_nbr_coef];
+                    dfi[h_nbr_coef] = sf2r[h_nbr_coef];
+                    
+                    // Conjugate complex numbers - vectorized inner loop
+                    auto sf1i = &sf1r[h_nbr_coef];
+                    auto sf2i = &sf1i[nbr_coef];
+                    
+                    int j;
+                    for (j = 1; j + 4 <= h_nbr_coef; j += 4) {
+                        simd_double4 vcos, vsin;
+                        simd_double4 sf1r_v, sf1i_v, sf2r_v, sf2i_v;
+                        
+                        // Load 4 values
+                        for (int k = 0; k < 4; k++) {
+                            _twiddle_cache->get_twiddle(pass, j + k, c, s);
+                            vcos[k] = c;
+                            vsin[k] = s;
+                            sf1r_v[k] = sf1r[j + k];
+                            sf1i_v[k] = sf1i[j + k];
+                            sf2r_v[k] = sf2r[j + k];
+                            sf2i_v[k] = sf2i[j + k];
+                        }
+                        
+                        // Complex multiply: sf2 * twiddle
+                        simd_double4 vr = sf2r_v * vcos - sf2i_v * vsin;
+                        simd_double4 vi = sf2r_v * vsin + sf2i_v * vcos;
+                        
+                        // Butterfly
+                        simd_double4 dfr_pos = sf1r_v + vr;
+                        simd_double4 dfr_neg = sf1r_v - vr;
+                        simd_double4 dfi_pos = vi + sf1i_v;
+                        simd_double4 dfi_neg = vi - sf1i_v;
+                        
+                        // Store 4 results
+                        for (int k = 0; k < 4; k++) {
+                            dfr[j + k] = dfr_pos[k];
+                            dfi[-(j + k)] = dfr_neg[k];
+                            dfi[j + k] = dfi_pos[k];
+                            dfi[nbr_coef - (j + k)] = dfi_neg[k];
+                        }
+                    }
+                    
+                    // Handle remainder with scalar code
+                    for (; j < h_nbr_coef; ++j) {
+                        _twiddle_cache->get_twiddle(pass, j, c, s);
+                        
+                        double v = sf2r[j] * c - sf2i[j] * s;
+                        dfr[j] = sf1r[j] + v;
+                        dfi[-j] = sf1r[j] - v;
+                        
+                        v = sf2r[j] * s + sf2i[j] * c;
+                        dfi[j] = v + sf1i[j];
+                        dfi[nbr_coef - j] = v - sf1i[j];
+                    }
+                }
+                
+                // Swap buffers
+                auto tmp = df;
+                df = sf;
+                sf = tmp;
+            }
+        }
+        else if (_nbr_bits == 2) {
+            // 4-point FFT (scalar)
+            f[1] = x[0] - x[2];
+            f[3] = x[1] - x[3];
+            const double b_0 = x[0] + x[2];
+            const double b_2 = x[1] + x[3];
+            f[0] = b_0 + b_2;
+            f[2] = b_0 - b_2;
+        }
+        else if (_nbr_bits == 1) {
+            // 2-point FFT
+            f[0] = x[0] + x[1];
+            f[1] = x[0] - x[1];
+        }
+        else {
+            // 1-point FFT
+            f[0] = x[0];
+        }
+    }
+    // SIMD-Accelerated Inverse FFT for double
+    
+    void do_ifft_simd_d1_accel(const double* f, double* x, bool do_scale) {
+        T1 c, s;
+        const double c2 = 2.0;
+        double mul = 1.0;
+        if (do_scale) mul = 1.0 / static_cast<double>(_N);
+        
+        if (_nbr_bits > 2) {
+            double* sf = const_cast<double*>(f);
+            double* df;
+            double* df_temp;
+            
+            if (_nbr_bits & 1) {
+                df = buffer_ptr;
+                df_temp = x;
+            } else {
+                df = x;
+                df_temp = buffer_ptr;
+            }
+            
+            
+            // Inverse passes with vectorization
+            
+            for (auto pass = _nbr_bits - 1; pass >= 3; --pass) {
+                auto nbr_coef = 1 << pass;
+                auto h_nbr_coef = nbr_coef >> 1;
+                auto d_nbr_coef = nbr_coef << 1;
+                
+                for (auto i = 0; i < _N; i += d_nbr_coef) {
+                    auto sfr = &sf[i];
+                    auto sfi = &sfr[nbr_coef];
+                    auto df1r = &df[i];
+                    auto df2r = &df1r[nbr_coef];
+                    
+                    df1r[0] = sfr[0] + sfr[nbr_coef];
+                    df2r[0] = sfr[0] - sfr[nbr_coef];
+                    df1r[h_nbr_coef] = sfr[h_nbr_coef] * c2;
+                    df2r[h_nbr_coef] = sfi[h_nbr_coef] * c2;
+                    
+                    auto df1i = &df1r[h_nbr_coef];
+                    auto df2i = &df1i[nbr_coef];
+                    
+                    // Vectorized loop
+                    int j;
+                    for (j = 1; j + 4 <= h_nbr_coef; j += 4) {
+                        simd_double4 vcos, vsin;
+                        simd_double4 sfr_v, sfi_v, sfi_neg_v, sfi_conj_v;
+                        
+                        for (int k = 0; k < 4; k++) {
+                            _twiddle_cache->get_twiddle(pass, j + k, c, s);
+                            vcos[k] = c;
+                            vsin[k] = s;
+                            sfr_v[k] = sfr[j + k];
+                            sfi_v[k] = sfi[j + k];
+                            sfi_neg_v[k] = sfi[-(j + k)];
+                            sfi_conj_v[k] = sfi[nbr_coef - (j + k)];
+                        }
+                        
+                        simd_double4 df1r_v = sfr_v + sfi_neg_v;
+                        simd_double4 df1i_v = sfi_v - sfi_conj_v;
+                        
+                        simd_double4 vr = sfr_v - sfi_neg_v;
+                        simd_double4 vi = sfi_v + sfi_conj_v;
+                        
+                        simd_double4 df2r_v = vr * vcos + vi * vsin;
+                        simd_double4 df2i_v = vi * vcos - vr * vsin;
+                        
+                        for (int k = 0; k < 4; k++) {
+                            df1r[j + k] = df1r_v[k];
+                            df1i[j + k] = df1i_v[k];
+                            df2r[j + k] = df2r_v[k];
+                            df2i[j + k] = df2i_v[k];
+                        }
+                    }
+                    
+                    // Scalar remainder
+                    for (; j < h_nbr_coef; ++j) {
+                        df1r[j] = sfr[j] + sfi[-j];
+                        df1i[j] = sfi[j] - sfi[nbr_coef - j];
+                        
+                        _twiddle_cache->get_twiddle(pass, j, c, s);
+                        
+                        auto vr = sfr[j] - sfi[-j];
+                        auto vi = sfi[j] + sfi[nbr_coef - j];
+                        
+                        df2r[j] = vr * c + vi * s;
+                        df2i[j] = vi * c - vr * s;
+                    }
+                }
+                
+                if (pass < _nbr_bits - 1) {
+                    auto tmp = df;
+                    df = sf;
+                    sf = tmp;
+                } else {
+                    sf = df;
+                    df = df_temp;
+                }
+            }
+            
+            
+            // Final passes with scaling - vectorized
+            
+            const double sq2_2 = SQ2_2;
+            
+            for (auto i = 0; i + 32 <= _N; i += 32) {
+                // Process 4 blocks of 8 samples (32 total) with SIMD
+                simd_double4 vmul;
+                for (int k = 0; k < 4; k++) vmul[k] = mul;
+                
+                for (int block = 0; block < 4; block++) {
+                    int base = i + block * 8;
+                    auto df2 = &df[base];
+                    auto sf2 = &sf[base];
+                    
+                    simd_double4 v0, v1, v2, v3, v4, v5, v6, v7;
+                    for (int lane = 0; lane < 4; lane++) {
+                        v0[lane] = sf2[lane * 8 + 0];
+                        v1[lane] = sf2[lane * 8 + 1];
+                        v2[lane] = sf2[lane * 8 + 2];
+                        v3[lane] = sf2[lane * 8 + 3];
+                        v4[lane] = sf2[lane * 8 + 4];
+                        v5[lane] = sf2[lane * 8 + 5];
+                        v6[lane] = sf2[lane * 8 + 6];
+                        v7[lane] = sf2[lane * 8 + 7];
+                    }
+                    
+                    simd_double4 vr = v1 - v3;
+                    simd_double4 vi = v5 + v7;
+                    
+                    simd_double4 out0 = v0 + v4;
+                    simd_double4 out1 = v1 + v3;
+                    simd_double4 out2 = v2 * c2;
+                    simd_double4 out3 = v5 - v7;
+                    simd_double4 out4 = v0 - v4;
+                    simd_double4 out5 = (vr + vi) * sq2_2;
+                    simd_double4 out6 = v6 * c2;
+                    simd_double4 out7 = (vi - vr) * sq2_2;
+                    
+                    for (int lane = 0; lane < 4; lane++) {
+                        df2[lane * 8 + 0] = out0[lane];
+                        df2[lane * 8 + 1] = out1[lane];
+                        df2[lane * 8 + 2] = out2[lane];
+                        df2[lane * 8 + 3] = out3[lane];
+                        df2[lane * 8 + 4] = out4[lane];
+                        df2[lane * 8 + 5] = out5[lane];
+                        df2[lane * 8 + 6] = out6[lane];
+                        df2[lane * 8 + 7] = out7[lane];
+                    }
+                }
+            }
+            
+            // Scalar remainder for last pass
+            for (auto i = 0; i < _N; i += 8) {
+                auto df2 = &df[i];
+                auto sf2 = &sf[i];
+                
+                auto vr = sf2[1] - sf2[3];
+                auto vi = sf2[5] + sf2[7];
+                
+                df2[0] = sf2[0] + sf2[4];
+                df2[1] = sf2[1] + sf2[3];
+                df2[2] = sf2[2] * c2;
+                df2[3] = sf2[5] - sf2[7];
+                df2[4] = sf2[0] - sf2[4];
+                df2[5] = (vr + vi) * sq2_2;
+                df2[6] = sf2[6] * c2;
+                df2[7] = (vi - vr) * sq2_2;
+            }
+            
+            // Final bit-reversal with vectorized scaling
+            auto lut_ptr = _bit_rev_lut->get_ptr();
+            simd_double4 vmul;
+            for (int k = 0; k < 4; k++) vmul[k] = mul;
+            
+            for (auto i = 0; i + 32 <= _N; i += 32) {
+                // Process 4 radix-4 butterflies at once
+                for (int group = 0; group < 4; group++) {
+                    int base = i + group * 8;
+                    auto lut = lut_ptr + base;
+                    auto sf2 = &df[base];
+                    
+                    simd_double4 b0_0, b0_2, b1, b3;
+                    for (int lane = 0; lane < 4; lane++) {
+                        b0_0[lane] = sf2[lane * 8 + 0] + sf2[lane * 8 + 2];
+                        b0_2[lane] = sf2[lane * 8 + 0] - sf2[lane * 8 + 2];
+                        b1[lane] = sf2[lane * 8 + 1] * c2;
+                        b3[lane] = sf2[lane * 8 + 3] * c2;
+                    }
+                    
+                    simd_double4 out0 = (b0_0 + b1) * vmul;
+                    simd_double4 out1 = (b0_0 - b1) * vmul;
+                    simd_double4 out2 = (b0_2 + b3) * vmul;
+                    simd_double4 out3 = (b0_2 - b3) * vmul;
+                    
+                    for (int lane = 0; lane < 4; lane++) {
+                        x[lut[lane * 8 + 0]] = out0[lane];
+                        x[lut[lane * 8 + 1]] = out1[lane];
+                        x[lut[lane * 8 + 2]] = out2[lane];
+                        x[lut[lane * 8 + 3]] = out3[lane];
+                    }
+                }
+            }
+            
+            // Scalar remainder
+            for (auto i = 0; i < _N; i += 8) {
+                auto lut = lut_ptr + i;
+                auto sf2 = &df[i];
+                
+                auto b_0 = sf2[0] + sf2[2];
+                auto b_2 = sf2[0] - sf2[2];
+                auto b_1 = sf2[1] * c2;
+                auto b_3 = sf2[3] * c2;
+                
+                x[lut[0]] = (b_0 + b_1) * mul;
+                x[lut[1]] = (b_0 - b_1) * mul;
+                x[lut[2]] = (b_2 + b_3) * mul;
+                x[lut[3]] = (b_2 - b_3) * mul;
+                
+                b_0 = sf2[4] + sf2[6];
+                b_2 = sf2[4] - sf2[6];
+                b_1 = sf2[5] * c2;
+                b_3 = sf2[7] * c2;
+                
+                x[lut[4]] = (b_0 + b_1) * mul;
+                x[lut[5]] = (b_0 - b_1) * mul;
+                x[lut[6]] = (b_2 + b_3) * mul;
+                x[lut[7]] = (b_2 - b_3) * mul;
+            }
+        }
+        else if (_nbr_bits == 2) {
+            const double b_0 = f[0] + f[2];
+            const double b_2 = f[0] - f[2];
+            x[0] = (b_0 + f[1] * c2) * mul;
+            x[2] = (b_0 - f[1] * c2) * mul;
+            x[1] = (b_2 + f[3] * c2) * mul;
+            x[3] = (b_2 - f[3] * c2) * mul;
+        }
+        else if (_nbr_bits == 1) {
+            x[0] = (f[0] + f[1]) * mul;
+            x[1] = (f[0] - f[1]) * mul;
+        }
+        else {
+            x[0] = f[0] * mul;
+        }
+    }
+    
+    class trigo_lookup {
+    protected:
+        int*_Nullable offsets = nullptr;
+        T1*_Nullable cos_data = nullptr;
+        int nbr_bits = 0;
+    public:
+        
+        
+        trigo_lookup(int bits) : nbr_bits(bits) {
+            int total_coef = 0;
+            
+            // Allocate with alignment
+            offsets = FFTReal::alignedAlloc<int>(nbr_bits + 1);
+            
+            // Calculate total size needed
+            for (int pass = 0; pass < nbr_bits; pass++) {
+                offsets[pass] = total_coef;
+                int nbr_coef = 1 << pass;
+                total_coef += nbr_coef;
+            }
+            offsets[nbr_bits] = total_coef;
+            
+            cos_data = FFTReal::alignedAlloc<T1>(total_coef);
+            
+            // Calculate and store trig values in flat array
+            for (int pass = 0; pass < nbr_bits; pass++) {
+                int nbr_coef = 1 << pass;
+                int offset = offsets[pass];
+                
+                // Calculate and store the cosine values
+                for (int i = 0; i < nbr_coef; i++) {
+                    cos_data[offset + i] = F_COS((i * M_PI) / nbr_coef);
+                }
+            }
+        }
+        
+        ~trigo_lookup() {
+            FFTReal::alignedFree(offsets);
+            FFTReal::alignedFree(cos_data);
+        }
+        
+        // Get pointer to the cosine values for a specific pass
+        inline const T1*_Nullable get_ptr(int pass) const {
+            return &cos_data[ offsets[pass] ];
+        }
+        
+        trigo_lookup(trigo_lookup&& other) noexcept :
+        nbr_bits(other.nbr_bits),
+        offsets(other.offsets),
+        cos_data(other.cos_data)
+        {
+            other.nbr_bits = 0;
+            other.offsets = nullptr;
+            other.cos_data = nullptr;
+        }
+        
+        // Implement move assignment
+        trigo_lookup& operator=(trigo_lookup&& other) noexcept {
+            if (this != &other) {
+                alignedFree(offsets);
+                alignedFree(cos_data);
+                
+                nbr_bits = other.nbr_bits;
+                offsets = std::move(other.offsets);
+                cos_data = std::move(other.cos_data);
+                
+                nbr_bits = 0;
+                other.offsets = nullptr;
+                other.cos_data = nullptr;
+            }
+            return *this;
+        }
+        
+        // Delete copy constructor and assignment to avoid double-free issues
+        trigo_lookup(const trigo_lookup&) = delete;
+        trigo_lookup& operator=(const trigo_lookup&) = delete;
+    };
+    
+    class bit_rev_lut {
+    protected:
+        int *_Nullable indices{nullptr};
+        int N{0}, nbr_bits{0};
+    public:
+        bit_rev_lut(int bits, int n) : nbr_bits(bits), N(n) {
+            indices = FFTReal::alignedAlloc<int>(N);
+            for (int i = 0; i < N; i++) {
+                int rev = 0;
+                for (int j = 0; j < nbr_bits; j++) {
+                    if (i & (1 << j)) rev |= (1 << (nbr_bits - 1 - j));
+                }
+                indices[i] = rev;
+            }
+        }
+        inline const int*_Nullable get_ptr() const {
+            return indices;
+        }
+        
+        bit_rev_lut(bit_rev_lut&& other) noexcept :
+        nbr_bits(other.nbr_bits),
+        N(other.N),
+        indices(std::move(other.indices))
+        {
+            other.nbr_bits = 0;
+            other.N = 0;
+            other.indices = nullptr;
+        }
+        
+        // Implement move assignment
+        bit_rev_lut& operator=(bit_rev_lut&& other) noexcept {
+            if (this != &other) {
+                alignedFree(indices);
+                
+                nbr_bits = other.nbr_bits;
+                N = other.N;
+                indices = std::move(other.indices);
+                
+                nbr_bits = 0;
+                N = 0;
+                other.indices = nullptr;
+            }
+            return *this;
+        }
+        
+        // Delete copy constructor and assignment to avoid double-free issues
+        bit_rev_lut(const bit_rev_lut&) = delete;
+        bit_rev_lut& operator=(const bit_rev_lut&) = delete;
+        
+        ~bit_rev_lut() {
+            FFTReal::alignedFree(indices);
+        }
+    };
+
     // Bit-reversal lookup table for FFT without std::vector
-   
+    
     std::unique_ptr<trigo_lookup>   _trigo_lut;
     std::unique_ptr<bit_rev_lut>    _bit_rev_lut;
     std::unique_ptr<twiddle_cache>  _twiddle_cache;
-
-#if USE_NEON
+    
+#if FFT_USE_NEON
     
 #if NEW_NEON_OPT
     typedef union {
@@ -781,25 +1939,25 @@ protected:
     inline void prefetch_read(const void *_Nonnull ptr) {
         __builtin_prefetch(ptr, 0, 3);  // 0=read, 3=high temporal locality
     }
-
+    
     inline void prefetch_write(void *_Nonnull ptr) {
         __builtin_prefetch(ptr, 1, 3);  // 1=write, 3=high temporal locality
     }
     
     // Define likely/unlikely macros for better readability
-    #define likely(x)   __builtin_expect(!!(x), 1)
-    #define unlikely(x) __builtin_expect(!!(x), 0)
+#define likely(x)   __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
     
     void do_fft_neon_f1(const float *_Nonnull x, float *_Nonnull f)
     {
         float c, s;
         if (likely(_nbr_bits > 2)) {
             float *sf, *df;
-
+            
             // Initial prefetch for memory
             __builtin_prefetch(x, 0, 3);
             __builtin_prefetch(_bit_rev_lut->get_ptr(), 0, 3);
-
+            
             if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 sf = f;
@@ -807,7 +1965,7 @@ protected:
                 df = f;
                 sf = buffer_ptr;
             }
-
+            
             // First/second pass with bit-reversal
             constexpr int PREFETCH_DISTANCE = 8;
             auto lut = _bit_rev_lut->get_ptr();
@@ -819,7 +1977,7 @@ protected:
                     __builtin_prefetch(&lut[i + PREFETCH_DISTANCE], 0, 3);
                     __builtin_prefetch(&x[lut[i + PREFETCH_DISTANCE]], 0, 3);
                 }
-
+                
                 // Load 4 inputs with bit-reversed indices using NEON
                 float32x4_t x0123 = { x[lut[i]], x[lut[i+1]], x[lut[i+2]], x[lut[i+3]] };
                 
@@ -835,7 +1993,7 @@ protected:
                 df[i+2] = v0 + v1 - v2 - v3;
                 df[i+3] = v2 - v3;
             }
-
+            
             // Third pass
             const float SQ2_2_val = SQ2_2;
             
@@ -874,24 +2032,24 @@ protected:
                 sf[i+5] = v + df3;
                 sf[i+7] = v - df3;
             }
-
+            
             // Later passes with twiddle factors
             for (auto pass = 3; pass < _nbr_bits; ++pass) {
                 auto nbr_coef = 1 << pass;
                 auto h_nbr_coef = nbr_coef >> 1;
                 auto d_nbr_coef = nbr_coef << 1;
-
+                
                 for (auto i = 0; i < _N; i += d_nbr_coef) {
                     auto sf1r = sf + i;
                     auto sf2r = sf1r + nbr_coef;
                     auto dfr = df + i;
                     auto dfi = dfr + nbr_coef;
-
+                    
                     // Prefetch for next block
                     if (likely(i + d_nbr_coef < _N)) {
                         __builtin_prefetch(&sf[i + d_nbr_coef], 0, 3);
                     }
-
+                    
                     // Process extreme coefficients
                     float sf1r_0 = sf1r[0];
                     float sf2r_0 = sf2r[0];
@@ -901,7 +2059,7 @@ protected:
                     
                     dfr[h_nbr_coef] = sf1r[h_nbr_coef];
                     dfi[h_nbr_coef] = sf2r[h_nbr_coef];
-
+                    
                     // Process other conjugate complex numbers
                     auto sf1i = &sf1r[h_nbr_coef];
                     auto sf2i = &sf1i[nbr_coef];
@@ -911,7 +2069,7 @@ protected:
                     if (h_nbr_coef > 1) {
                         _twiddle_cache->get_twiddle(pass, 1, c_next, s_next);
                     }
-
+                    
                     // Process conjugate numbers in blocks for NEON when possible
                     for (int j = 1; j < h_nbr_coef; ++j) {
                         // Use preloaded twiddle factors
@@ -924,7 +2082,7 @@ protected:
                             __builtin_prefetch(&sf2r[j + 1], 0, 3);
                             _twiddle_cache->get_twiddle(pass, j + 1, c_next, s_next);
                         }
-
+                        
                         // Load individual scalar values
                         float sf1r_j = sf1r[j];
                         float sf2r_j = sf2r[j];
@@ -936,7 +2094,7 @@ protected:
                         
                         dfr[j] = sf1r_j + v;
                         dfi[-j] = sf1r_j - v;
-
+                        
                         // Calculate v = sf2r[j] * s + sf2i[j] * c
                         v = sf2r_j * s + sf2i_j * c;
                         
@@ -976,11 +2134,11 @@ protected:
         double c, s;
         if (likely(_nbr_bits > 2)) {
             double *sf, *df;
-
+            
             // Initial prefetch
             __builtin_prefetch(x, 0, 3);
-            __builtin_prefetch(_bit_rev_lut.get_ptr(), 0, 3);
-
+            __builtin_prefetch(_bit_rev_lut->get_ptr(), 0, 3);
+            
             if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 sf = f;
@@ -988,19 +2146,19 @@ protected:
                 df = f;
                 sf = buffer_ptr;
             }
-
+            
             // First and second pass with bit-reversal
             constexpr int PREFETCH_DISTANCE = 8;
-            auto lut = _bit_rev_lut.get_ptr();
+            auto lut = _bit_rev_lut->get_ptr();
             
             // Process elements in pairs for NEON optimization with doubles
-            #pragma unroll 2
+#pragma unroll 2
             for (auto i = 0; i < _N; i += 4) {
                 if (likely(i + PREFETCH_DISTANCE < _N)) {
                     __builtin_prefetch(&lut[i + PREFETCH_DISTANCE], 0, 3);
                     __builtin_prefetch(&x[lut[i + PREFETCH_DISTANCE]], 0, 3);
                 }
-
+                
                 // Load individual bit-reversed elements
                 double x0 = x[lut[i]];
                 double x1 = x[lut[i+1]];
@@ -1013,7 +2171,7 @@ protected:
                 df[i+2] = x0 + x1 - x2 - x3;
                 df[i+3] = x2 - x3;
             }
-
+            
             // Third pass with SQ2_2 optimizations
             const double SQ2_2_val = SQ2_2;
             
@@ -1022,7 +2180,7 @@ protected:
                 if (likely(i + 8 < _N)) {
                     __builtin_prefetch(&df[i + 8], 0, 3);
                 }
-
+                
                 // Load elements in batches of 2 for NEON processing
                 double df0 = df[i];
                 double df1 = df[i+1];
@@ -1048,24 +2206,24 @@ protected:
                 sf[i+5] = v + df3;
                 sf[i+7] = v - df3;
             }
-
+            
             // Next passes with twiddle factors
             for (auto pass = 3; pass < _nbr_bits; ++pass) {
                 auto nbr_coef = 1 << pass;
                 auto h_nbr_coef = nbr_coef >> 1;
                 auto d_nbr_coef = nbr_coef << 1;
-
+                
                 for (auto i = 0; i < _N; i += d_nbr_coef) {
                     auto sf1r = sf + i;
                     auto sf2r = sf1r + nbr_coef;
                     auto dfr = df + i;
                     auto dfi = dfr + nbr_coef;
-
+                    
                     // Prefetch for next block
                     if (likely(i + d_nbr_coef < _N)) {
                         __builtin_prefetch(&sf[i + d_nbr_coef], 0, 3);
                     }
-
+                    
                     // Process extreme coefficients
                     double sf1r_0 = sf1r[0];
                     double sf2r_0 = sf2r[0];
@@ -1075,7 +2233,7 @@ protected:
                     
                     dfr[h_nbr_coef] = sf1r[h_nbr_coef];
                     dfi[h_nbr_coef] = sf2r[h_nbr_coef];
-
+                    
                     // Process conjugate complex numbers
                     auto sf1i = &sf1r[h_nbr_coef];
                     auto sf2i = &sf1i[nbr_coef];
@@ -1083,9 +2241,9 @@ protected:
                     // Preload first twiddle factors
                     double c_next, s_next;
                     if (h_nbr_coef > 1) {
-                        _twiddle_cache.get_twiddle(pass, 1, c_next, s_next);
+                        _twiddle_cache->get_twiddle(pass, 1, c_next, s_next);
                     }
-
+                    
                     for (int j = 1; j < h_nbr_coef; ++j) {
                         // Use preloaded twiddle factors
                         c = c_next;
@@ -1095,9 +2253,9 @@ protected:
                         if (likely(j + 1 < h_nbr_coef)) {
                             __builtin_prefetch(&sf1r[j + 1], 0, 3);
                             __builtin_prefetch(&sf2r[j + 1], 0, 3);
-                            _twiddle_cache.get_twiddle(pass, j + 1, c_next, s_next);
+                            _twiddle_cache->get_twiddle(pass, j + 1, c_next, s_next);
                         }
-
+                        
                         // Load scalar values
                         double sf1r_j = sf1r[j];
                         double sf2r_j = sf2r[j];
@@ -1108,7 +2266,7 @@ protected:
                         
                         dfr[j] = sf1r_j + v;
                         dfi[-j] = sf1r_j - v;
-
+                        
                         // Calculate v = sf2r[j] * s + sf2i[j] * c
                         double sf1i_j = sf1i[j];
                         v = sf2r_j * s + sf2i_j * c;
@@ -1153,12 +2311,12 @@ protected:
         if (unlikely(do_scale)) {
             mul = 1.0f / (float)_N;
         }
-
+        
         if (likely(_nbr_bits > 2)) {
             float *sf = (float*)f;
             float *df;
             float *df_temp;
-
+            
             if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 df_temp = x;
@@ -1166,24 +2324,24 @@ protected:
                 df = x;
                 df_temp = buffer_ptr;
             }
-
+            
             // First pass with NEON optimizations where possible
             for (auto pass = _nbr_bits - 1; pass >= 3; --pass) {
                 auto nbr_coef = 1 << pass;
                 auto h_nbr_coef = nbr_coef >> 1;
                 auto d_nbr_coef = nbr_coef << 1;
-
+                
                 for (auto i = 0; i < _N; i += d_nbr_coef) {
                     auto sfr = &sf[i];
                     auto sfi = &sfr[nbr_coef];
                     auto df1r = &df[i];
                     auto df2r = &df1r[nbr_coef];
-
+                    
                     // Prefetch next block
                     if (likely(i + d_nbr_coef < _N)) {
                         __builtin_prefetch(&sf[i + d_nbr_coef], 0, 3);
                     }
-
+                    
                     // Process extreme coefficients
                     float sfr_0 = sfr[0];
                     float sfr_nbr_coef = sfr[nbr_coef];
@@ -1194,7 +2352,7 @@ protected:
                     // Process h_nbr_coef coefficients with c2 multiply
                     df1r[h_nbr_coef] = sfr[h_nbr_coef] * c2;
                     df2r[h_nbr_coef] = sfi[h_nbr_coef] * c2;
-
+                    
                     // Process conjugate complex numbers
                     auto df1i = &df1r[h_nbr_coef];
                     auto df2i = &df1i[nbr_coef];
@@ -1204,7 +2362,7 @@ protected:
                     if (h_nbr_coef > 1) {
                         _twiddle_cache->get_twiddle(pass, 1, c_next, s_next);
                     }
-
+                    
                     for (int j = 1; j < h_nbr_coef; ++j) {
                         // Use preloaded twiddle factors
                         float c = c_next;
@@ -1216,27 +2374,27 @@ protected:
                             __builtin_prefetch(&sfi[-(j + 1)], 0, 3);
                             _twiddle_cache->get_twiddle(pass, j + 1, c_next, s_next);
                         }
-
+                        
                         // Load scalar values
                         float sfr_j = sfr[j];
                         float sfi_neg_j = sfi[-j];
                         float sfi_j = sfi[j];
                         float sfi_nbr_j = sfi[nbr_coef - j];
-
+                        
                         // Calculate df1r and df1i
                         df1r[j] = sfr_j + sfi_neg_j;
                         df1i[j] = sfi_j - sfi_nbr_j;
-
+                        
                         // Calculate vr and vi
                         float vr = sfr_j - sfi_neg_j;
                         float vi = sfi_j + sfi_nbr_j;
-
+                        
                         // Calculate df2r and df2i
                         df2r[j] = vr * c + vi * s;
                         df2i[j] = vi * c - vr * s;
                     }
                 }
-
+                
                 // Prepare for next pass
                 if (pass < _nbr_bits - 1) {
                     auto tmp = df;
@@ -1247,7 +2405,7 @@ protected:
                     df = df_temp;
                 }
             }
-
+            
             // Antepenultimate pass with SQ2_2 optimizations
             const float SQ2_2_val = SQ2_2;
             
@@ -1256,7 +2414,7 @@ protected:
                 if (likely(i + 8 < _N)) {
                     __builtin_prefetch(&sf[i + 8], 0, 3);
                 }
-
+                
                 // Load scalar values
                 float f0 = sf[i];
                 float f4 = sf[i+4];
@@ -1292,7 +2450,7 @@ protected:
                 df[i+5] = (vr + vi) * SQ2_2_val;
                 df[i+7] = (vi - vr) * SQ2_2_val;
             }
-
+            
             // Penultimate and last pass with bit-reversal
             auto lut_ptr = _bit_rev_lut->get_ptr();
             
@@ -1304,40 +2462,40 @@ protected:
                 if (likely(i + 8 < _N)) {
                     __builtin_prefetch(&x[lut[8]], 1, 0);
                 }
-
+                
                 // Process first 4 outputs
                 {
                     float sf0 = sf2[0];
                     float sf1 = sf2[1];
                     float sf2val = sf2[2];
                     float sf3 = sf2[3];
-
+                    
                     // Butterfly calculation
                     float b_0 = sf0 + sf2val;
                     float b_2 = sf0 - sf2val;
                     float b_1 = sf1 * c2;
                     float b_3 = sf3 * c2;
-
+                    
                     // Apply scaling and store with bit-reversal
                     x[lut[0]] = (b_0 + b_1) * mul;
                     x[lut[1]] = (b_0 - b_1) * mul;
                     x[lut[2]] = (b_2 + b_3) * mul;
                     x[lut[3]] = (b_2 - b_3) * mul;
                 }
-
+                
                 // Process second 4 outputs
                 {
                     float sf4 = sf2[4];
                     float sf5 = sf2[5];
                     float sf6 = sf2[6];
                     float sf7 = sf2[7];
-
+                    
                     // Butterfly calculation
                     float b_0 = sf4 + sf6;
                     float b_2 = sf4 - sf6;
                     float b_1 = sf5 * c2;
                     float b_3 = sf7 * c2;
-
+                    
                     // Apply scaling and store with bit-reversal
                     x[lut[4]] = (b_0 + b_1) * mul;
                     x[lut[5]] = (b_0 - b_1) * mul;
@@ -1380,12 +2538,12 @@ protected:
         if (unlikely(do_scale)) {
             mul = 1.0 / (double)_N;
         }
-
+        
         if (likely(_nbr_bits > 2)) {
             double *sf = (double*)f;
             double *df;
             double *df_temp;
-
+            
             if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 df_temp = x;
@@ -1393,24 +2551,24 @@ protected:
                 df = x;
                 df_temp = buffer_ptr;
             }
-
+            
             // First pass with NEON optimizations where possible
             for (auto pass = _nbr_bits - 1; pass >= 3; --pass) {
                 auto nbr_coef = 1 << pass;
                 auto h_nbr_coef = nbr_coef >> 1;
                 auto d_nbr_coef = nbr_coef << 1;
-
+                
                 for (auto i = 0; i < _N; i += d_nbr_coef) {
                     auto sfr = &sf[i];
                     auto sfi = &sfr[nbr_coef];
                     auto df1r = &df[i];
                     auto df2r = &df1r[nbr_coef];
-
+                    
                     // Prefetch next block
                     if (likely(i + d_nbr_coef < _N)) {
                         __builtin_prefetch(&sf[i + d_nbr_coef], 0, 3);
                     }
-
+                    
                     // Process extreme coefficients with scalar operations
                     double sfr_0 = sfr[0];
                     double sfr_nbr_coef = sfr[nbr_coef];
@@ -1421,7 +2579,7 @@ protected:
                     // Process h_nbr_coef with c2 multiply
                     df1r[h_nbr_coef] = sfr[h_nbr_coef] * c2;
                     df2r[h_nbr_coef] = sfi[h_nbr_coef] * c2;
-
+                    
                     // Process conjugate complex numbers
                     auto df1i = &df1r[h_nbr_coef];
                     auto df2i = &df1i[nbr_coef];
@@ -1429,9 +2587,9 @@ protected:
                     // Preload first twiddle factors
                     double c_next, s_next;
                     if (h_nbr_coef > 1) {
-                        _twiddle_cache.get_twiddle(pass, 1, c_next, s_next);
+                        _twiddle_cache->get_twiddle(pass, 1, c_next, s_next);
                     }
-
+                    
                     for (int j = 1; j < h_nbr_coef; ++j) {
                         // Use preloaded twiddle factors
                         double c = c_next;
@@ -1441,29 +2599,29 @@ protected:
                         if (likely(j + 1 < h_nbr_coef)) {
                             __builtin_prefetch(&sfr[j + 1], 0, 3);
                             __builtin_prefetch(&sfi[-(j + 1)], 0, 3);
-                            _twiddle_cache.get_twiddle(pass, j + 1, c_next, s_next);
+                            _twiddle_cache->get_twiddle(pass, j + 1, c_next, s_next);
                         }
-
+                        
                         // Load scalar values
                         double sfr_j = sfr[j];
                         double sfi_neg_j = sfi[-j];
                         double sfi_j = sfi[j];
                         double sfi_nbr_j = sfi[nbr_coef - j];
-
+                        
                         // Calculate df1r and df1i values
                         df1r[j] = sfr_j + sfi_neg_j;
                         df1i[j] = sfi_j - sfi_nbr_j;
-
+                        
                         // Calculate vr and vi
                         double vr = sfr_j - sfi_neg_j;
                         double vi = sfi_j + sfi_nbr_j;
-
+                        
                         // Calculate with scalar operations
                         df2r[j] = vr * c + vi * s;
                         df2i[j] = vi * c - vr * s;
                     }
                 }
-
+                
                 // Prepare for next pass
                 if (pass < _nbr_bits - 1) {
                     auto tmp = df;
@@ -1474,7 +2632,7 @@ protected:
                     df = df_temp;
                 }
             }
-
+            
             // Antepenultimate pass with SQ2_2 optimizations
             const double SQ2_2_val = SQ2_2;
             
@@ -1483,7 +2641,7 @@ protected:
                 if (likely(i + 8 < _N)) {
                     __builtin_prefetch(&sf[i + 8], 0, 3);
                 }
-
+                
                 // Load scalar values
                 double f0 = sf[i];
                 double f4 = sf[i+4];
@@ -1519,9 +2677,9 @@ protected:
                 df[i+5] = (vr + vi) * SQ2_2_val;
                 df[i+7] = (vi - vr) * SQ2_2_val;
             }
-
+            
             // Penultimate and last pass with bit-reversal
-            auto lut_ptr = _bit_rev_lut.get_ptr();
+            auto lut_ptr = _bit_rev_lut->get_ptr();
             
             for (auto i = 0; i < _N; i += 8) {
                 auto lut = lut_ptr + i;
@@ -1531,40 +2689,40 @@ protected:
                 if (likely(i + 8 < _N)) {
                     __builtin_prefetch(&x[lut[8]], 1, 0);
                 }
-
+                
                 // Process first 4 outputs
                 {
                     double sf0 = sf2[0];
                     double sf1 = sf2[1];
                     double sf2val = sf2[2];
                     double sf3 = sf2[3];
-
+                    
                     // Calculate butterfly values
                     double b_0 = sf0 + sf2val;
                     double b_2 = sf0 - sf2val;
                     double b_1 = sf1 * c2;
                     double b_3 = sf3 * c2;
-
+                    
                     // Apply scaling and store with bit-reversal
                     x[lut[0]] = (b_0 + b_1) * mul;
                     x[lut[1]] = (b_0 - b_1) * mul;
                     x[lut[2]] = (b_2 + b_3) * mul;
                     x[lut[3]] = (b_2 - b_3) * mul;
                 }
-
+                
                 // Process second 4 outputs
                 {
                     double sf4 = sf2[4];
                     double sf5 = sf2[5];
                     double sf6 = sf2[6];
                     double sf7 = sf2[7];
-
+                    
                     // Calculate butterfly values
                     double b_0 = sf4 + sf6;
                     double b_2 = sf4 - sf6;
                     double b_1 = sf5 * c2;
                     double b_3 = sf7 * c2;
-
+                    
                     // Apply scaling and store with bit-reversal
                     x[lut[4]] = (b_0 + b_1) * mul;
                     x[lut[5]] = (b_0 - b_1) * mul;
@@ -1610,7 +2768,7 @@ protected:
             // Initial prefetch
             __builtin_prefetch(x, 0, 3);
             __builtin_prefetch(lut, 0, 3);
-
+            
             if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 sf = f;
@@ -1618,14 +2776,14 @@ protected:
                 df = f;
                 sf = buffer_ptr;
             }
-
-            #pragma unroll 2
+            
+#pragma unroll 2
             for (auto i = 0; i < _N; i += 4) {
                 if (likely(i + PREFETCH_DISTANCE < _N)) {
                     __builtin_prefetch(&lut[i + PREFETCH_DISTANCE], 0, 3);
                     __builtin_prefetch(&x[lut[i + PREFETCH_DISTANCE]], 0, 3);
                 }
-
+                
                 // For simd_float2, load 2 floats at a time with proper casting
                 float32x2_t x0 = vld1_f32((float*)&x[lut[i]]);
                 float32x2_t x1 = vld1_f32((float*)&x[lut[i+1]]);
@@ -1645,7 +2803,7 @@ protected:
                 vst1_f32(df_ptr + 4, vsub_f32(sum01, sum23));
                 vst1_f32(df_ptr + 6, diff23);
             }
-
+            
             // Third pass with SQ2_2 optimizations
             const float32x2_t sq2_constants = {-SQ2_2, SQ2_2};
             
@@ -1654,7 +2812,7 @@ protected:
                 if (likely(i + 8 < _N)) {
                     __builtin_prefetch(&df[i + 8], 0, 3);
                 }
-
+                
                 // Load with proper casting
                 float32x2_t df0 = vld1_f32((float*)&df[i]);
                 float32x2_t df4 = vld1_f32((float*)&df[i+4]);
@@ -1676,7 +2834,7 @@ protected:
                 float32x2_t df3 = vld1_f32((float*)&df[i+3]);
                 float32x2_t df5 = vld1_f32((float*)&df[i+5]);
                 float32x2_t df7 = vld1_f32((float*)&df[i+7]);
-
+                
                 // Calculate butterfly with optimized operations
                 // For 2-element vectors, use appropriate intrinsics
                 float32x2_t v1 = vmul_n_f32(df5, vget_lane_f32(sq2_constants, 0));
@@ -1684,31 +2842,31 @@ protected:
                 
                 float32x2_t v2 = vmul_n_f32(df5, vget_lane_f32(sq2_constants, 1));
                 v2 = vmla_n_f32(v2, df7, vget_lane_f32(sq2_constants, 1));
-
+                
                 // Store final results with proper casting
                 vst1_f32((float*)&sf[i+1], vadd_f32(df1, v1));
                 vst1_f32((float*)&sf[i+3], vsub_f32(df1, v1));
                 vst1_f32((float*)&sf[i+5], vadd_f32(v2, df3));
                 vst1_f32((float*)&sf[i+7], vsub_f32(v2, df3));
             }
-
+            
             // Later passes with twiddle factors
             for (auto pass = 3; pass < _nbr_bits; ++pass) {
                 auto nbr_coef = 1 << pass;
                 auto h_nbr_coef = nbr_coef >> 1;
                 auto d_nbr_coef = nbr_coef << 1;
-
+                
                 for (auto i = 0; i < _N; i += d_nbr_coef) {
                     auto sf1r = sf + i;
                     auto sf2r = sf1r + nbr_coef;
                     auto dfr = df + i;
                     auto dfi = dfr + nbr_coef;
-
+                    
                     // Prefetch for next block
                     if (likely(i + d_nbr_coef < _N)) {
                         __builtin_prefetch(&sf[i + d_nbr_coef], 0, 3);
                     }
-
+                    
                     // Process extreme coefficients with proper casting
                     float32x2_t sf1r_0 = vld1_f32((float*)&sf1r[0]);
                     float32x2_t sf2r_0 = vld1_f32((float*)&sf2r[0]);
@@ -1718,7 +2876,7 @@ protected:
                     
                     vst1_f32((float*)&dfr[h_nbr_coef], vld1_f32((float*)&sf1r[h_nbr_coef]));
                     vst1_f32((float*)&dfi[h_nbr_coef], vld1_f32((float*)&sf2r[h_nbr_coef]));
-
+                    
                     // Process other conjugate complex numbers
                     auto sf1i = &sf1r[h_nbr_coef];
                     auto sf2i = &sf1i[nbr_coef];
@@ -1728,7 +2886,7 @@ protected:
                     if (h_nbr_coef > 1) {
                         _twiddle_cache->get_twiddle(pass, 1, c_next, s_next);
                     }
-
+                    
                     for (int j = 1; j < h_nbr_coef; ++j) {
                         // Use preloaded twiddle factors
                         c = c_next;
@@ -1740,7 +2898,7 @@ protected:
                             __builtin_prefetch(&sf2r[j + 1], 0, 3);
                             _twiddle_cache->get_twiddle(pass, j + 1, c_next, s_next);
                         }
-
+                        
                         // Load data with proper casting
                         float32x2_t sf1r_j = vld1_f32((float*)&sf1r[j]);
                         float32x2_t sf2r_j = vld1_f32((float*)&sf2r[j]);
@@ -1754,7 +2912,7 @@ protected:
                         // Store results with proper casting
                         vst1_f32((float*)&dfr[j], vadd_f32(sf1r_j, v));
                         vst1_f32((float*)&dfi[-j], vsub_f32(sf1r_j, v));
-
+                        
                         // Load additional data with proper casting
                         float32x2_t sf1i_j = vld1_f32((float*)&sf1i[j]);
                         
@@ -1799,11 +2957,11 @@ protected:
         double c, s;
         if (likely(_nbr_bits > 2)) {
             simd_double2 *sf, *df;
-
+            
             // Initial prefetch
             __builtin_prefetch(x, 0, 3);
             __builtin_prefetch(_bit_rev_lut->get_ptr(), 0, 3);
-
+            
             if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 sf = f;
@@ -1811,7 +2969,7 @@ protected:
                 df = f;
                 sf = buffer_ptr;
             }
-
+            
             // First and second pass with bit-reversal
             constexpr int PREFETCH_DISTANCE = 8;
             auto lut_ptr = _bit_rev_lut->get_ptr();
@@ -1825,7 +2983,7 @@ protected:
                 
                 auto df2 = &df[i];
                 auto lut = &lut_ptr[i];
-
+                
                 // For simd_double2, load 2 doubles at a time
                 float64x2_t x0 = vld1q_f64((double*)&x[lut[0]]);
                 float64x2_t x1 = vld1q_f64((double*)&x[lut[1]]);
@@ -1845,7 +3003,7 @@ protected:
                 vst1q_f64(df_ptr + 4, vsubq_f64(sum01, sum23));
                 vst1q_f64(df_ptr + 6, diff23);
             }
-
+            
             // Third pass with SQ2_2 optimization
             const float64x1_t neg_sq2_2 = vdup_n_f64(-SQ2_2);
             const float64x1_t pos_sq2_2 = vdup_n_f64(SQ2_2);
@@ -1855,7 +3013,7 @@ protected:
                 if (likely(i + 8 < _N)) {
                     __builtin_prefetch(&df[i + 8], 0, 3);
                 }
-
+                
                 // Load data with proper casting
                 double* df_ptr = (double*)&df[i];
                 float64x2_t df0 = vld1q_f64(df_ptr);
@@ -1881,43 +3039,43 @@ protected:
                 float64x2_t df3 = vld1q_f64(df_ptr + 6);
                 float64x2_t df5 = vld1q_f64(df_ptr + 10);
                 float64x2_t df7 = vld1q_f64(df_ptr + 14);
-
+                
                 // Calculate v1 with scalar multiplication
                 float64x2_t neg_sq2_2_vec = vdupq_n_f64(vget_lane_f64(neg_sq2_2, 0));
                 float64x2_t v1 = vmulq_f64(df5, neg_sq2_2_vec);
                 float64x2_t df7_scaled = vmulq_f64(df7, neg_sq2_2_vec);
                 v1 = vaddq_f64(v1, df7_scaled);
-
+                
                 // Calculate v2 with scalar multiplication
                 float64x2_t pos_sq2_2_vec = vdupq_n_f64(vget_lane_f64(pos_sq2_2, 0));
                 float64x2_t v2 = vmulq_f64(df5, pos_sq2_2_vec);
                 float64x2_t df7_scaled2 = vmulq_f64(df7, pos_sq2_2_vec);
                 v2 = vaddq_f64(v2, df7_scaled2);
-
+                
                 // Store final results
                 vst1q_f64(sf_ptr + 2,  vaddq_f64(df1, v1));
                 vst1q_f64(sf_ptr + 6,  vsubq_f64(df1, v1));
                 vst1q_f64(sf_ptr + 10, vaddq_f64(v2, df3));
                 vst1q_f64(sf_ptr + 14, vsubq_f64(v2, df3));
             }
-
+            
             // Later passes with twiddle factors
             for (auto pass = 3; pass < _nbr_bits; ++pass) {
                 auto nbr_coef = 1 << pass;
                 auto h_nbr_coef = nbr_coef >> 1;
                 auto d_nbr_coef = nbr_coef << 1;
-
+                
                 for (auto i = 0; i < _N; i += d_nbr_coef) {
                     auto sf1r = sf + i;
                     auto sf2r = sf1r + nbr_coef;
                     auto dfr = df + i;
                     auto dfi = dfr + nbr_coef;
-
+                    
                     // Prefetch for next block
                     if (likely(i + d_nbr_coef < _N)) {
                         __builtin_prefetch(&sf[i + d_nbr_coef], 0, 3);
                     }
-
+                    
                     // Process extreme coefficients with proper casting
                     double* sf1r_ptr = (double*)sf1r;
                     double* sf2r_ptr = (double*)sf2r;
@@ -1938,7 +3096,7 @@ protected:
                     
                     vst1q_f64(dfr_h_ptr, vld1q_f64(sf1r_h_ptr));
                     vst1q_f64(dfi_h_ptr, vld1q_f64(sf2r_h_ptr));
-
+                    
                     // Process conjugate complex numbers
                     auto sf1i = &sf1r[h_nbr_coef];
                     auto sf2i = &sf1i[nbr_coef];
@@ -1948,7 +3106,7 @@ protected:
                     if (h_nbr_coef > 1) {
                         _twiddle_cache->get_twiddle(pass, 1, c_next, s_next);
                     }
-
+                    
                     for (int j = 1; j < h_nbr_coef; ++j) {
                         // Use preloaded twiddle factors
                         c = c_next;
@@ -1960,7 +3118,7 @@ protected:
                             __builtin_prefetch(&sf2r[j + 1], 0, 3);
                             _twiddle_cache->get_twiddle(pass, j + 1, c_next, s_next);
                         }
-
+                        
                         // Load data with proper casting
                         double* sf1r_j_ptr = (double*)&sf1r[j];
                         double* sf2r_j_ptr = (double*)&sf2r[j];
@@ -1974,7 +3132,7 @@ protected:
                         float64x2_t sf1r_j = vld1q_f64(sf1r_j_ptr);
                         float64x2_t sf2r_j = vld1q_f64(sf2r_j_ptr);
                         float64x2_t sf2i_j = vld1q_f64(sf2i_j_ptr);
-
+                        
                         // Calculate sf2r*c - sf2i*s with scalar multiplication
                         float64x2_t c_vec = vdupq_n_f64(c);
                         float64x2_t s_vec = vdupq_n_f64(s);
@@ -1986,7 +3144,7 @@ protected:
                         // Store results
                         vst1q_f64(dfr_j_ptr, vaddq_f64(sf1r_j, v));
                         vst1q_f64(dfi_neg_j_ptr, vsubq_f64(sf1r_j, v));
-
+                        
                         // Calculate sf2r*s + sf2i*c
                         float64x2_t sf1i_j = vld1q_f64(sf1i_j_ptr);
                         
@@ -2030,11 +3188,11 @@ protected:
         float c, s;
         if (likely(_nbr_bits > 2)) {
             simd_float4 *sf, *df;
-
+            
             // Initial prefetch
             __builtin_prefetch(x, 0, 3);
-            __builtin_prefetch(_bit_rev_lut.get_ptr(), 0, 3);
-
+            __builtin_prefetch(_bit_rev_lut->get_ptr(), 0, 3);
+            
             if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 sf = f;
@@ -2042,10 +3200,10 @@ protected:
                 df = f;
                 sf = buffer_ptr;
             }
-
+            
             // First/second pass with bit-reversal
             constexpr int PREFETCH_DISTANCE = 8;
-            auto lut_ptr = _bit_rev_lut.get_ptr();
+            auto lut_ptr = _bit_rev_lut->get_ptr();
             
 #pragma unroll 2
             for (auto i = 0; i < _N; i += 4) {
@@ -2053,7 +3211,7 @@ protected:
                     __builtin_prefetch(&lut_ptr[i + PREFETCH_DISTANCE], 0, 3);
                     __builtin_prefetch(&x[lut_ptr[i + PREFETCH_DISTANCE]], 0, 3);
                 }
-
+                
                 // Load input data in bit-reversed order with correct casting
                 float32x4_t x0 = vld1q_f32((float*)&x[lut_ptr[i]]);
                 float32x4_t x1 = vld1q_f32((float*)&x[lut_ptr[i+1]]);
@@ -2073,7 +3231,7 @@ protected:
                 vst1q_f32(df_ptr + 8, vsubq_f32(sum01, sum23));
                 vst1q_f32(df_ptr + 12, diff23);
             }
-
+            
             // Third pass with SQ2_2 optimizations
             static const float32x2_t sq2_constants = {-SQ2_2, SQ2_2};
             
@@ -2082,7 +3240,7 @@ protected:
                 if (likely(i + 8 < _N)) {
                     __builtin_prefetch(&df[i + 8], 0, 3);
                 }
-
+                
                 // Load with proper casting
                 float32x4_t df0 = vld1q_f32((float*)&df[i]);
                 float32x4_t df4 = vld1q_f32((float*)&df[i+4]);
@@ -2104,42 +3262,42 @@ protected:
                 float32x4_t df3 = vld1q_f32((float*)&df[i+3]);
                 float32x4_t df5 = vld1q_f32((float*)&df[i+5]);
                 float32x4_t df7 = vld1q_f32((float*)&df[i+7]);
-
+                
                 // Calculate butterfly with FMA operations
                 float32x4_t v1 = vfmaq_lane_f32(
-                    vfmaq_lane_f32(vdupq_n_f32(0.0f), df5, sq2_constants, 0),
-                    df7, sq2_constants, 0
-                );
+                                                vfmaq_lane_f32(vdupq_n_f32(0.0f), df5, sq2_constants, 0),
+                                                df7, sq2_constants, 0
+                                                );
                 
                 float32x4_t v2 = vfmaq_lane_f32(
-                    vfmaq_lane_f32(vdupq_n_f32(0.0f), df5, sq2_constants, 1),
-                    df7, sq2_constants, 1
-                );
-
+                                                vfmaq_lane_f32(vdupq_n_f32(0.0f), df5, sq2_constants, 1),
+                                                df7, sq2_constants, 1
+                                                );
+                
                 // Store final results with proper casting
                 vst1q_f32((float*)&sf[i+1], vaddq_f32(df1, v1));
                 vst1q_f32((float*)&sf[i+3], vsubq_f32(df1, v1));
                 vst1q_f32((float*)&sf[i+5], vaddq_f32(v2, df3));
                 vst1q_f32((float*)&sf[i+7], vsubq_f32(v2, df3));
             }
-
+            
             // Later passes with twiddle factors
             for (auto pass = 3; pass < _nbr_bits; ++pass) {
                 auto nbr_coef = 1 << pass;
                 auto h_nbr_coef = nbr_coef >> 1;
                 auto d_nbr_coef = nbr_coef << 1;
-
+                
                 for (auto i = 0; i < _N; i += d_nbr_coef) {
                     auto sf1r = sf + i;
                     auto sf2r = sf1r + nbr_coef;
                     auto dfr = df + i;
                     auto dfi = dfr + nbr_coef;
-
+                    
                     // Prefetch for next block
                     if (likely(i + d_nbr_coef < _N)) {
                         __builtin_prefetch(&sf[i + d_nbr_coef], 0, 3);
                     }
-
+                    
                     // Process extreme coefficients with proper casting
                     float32x4_t sf1r_0 = vld1q_f32((float*)&sf1r[0]);
                     float32x4_t sf2r_0 = vld1q_f32((float*)&sf2r[0]);
@@ -2149,7 +3307,7 @@ protected:
                     
                     vst1q_f32((float*)&dfr[h_nbr_coef], vld1q_f32((float*)&sf1r[h_nbr_coef]));
                     vst1q_f32((float*)&dfi[h_nbr_coef], vld1q_f32((float*)&sf2r[h_nbr_coef]));
-
+                    
                     // Process other conjugate complex numbers
                     auto sf1i = &sf1r[h_nbr_coef];
                     auto sf2i = &sf1i[nbr_coef];
@@ -2157,9 +3315,9 @@ protected:
                     // Preload first twiddle factors
                     float c_next, s_next;
                     if (h_nbr_coef > 1) {
-                        _twiddle_cache.get_twiddle(pass, 1, c_next, s_next);
+                        _twiddle_cache->get_twiddle(pass, 1, c_next, s_next);
                     }
-
+                    
                     for (int j = 1; j < h_nbr_coef; ++j) {
                         // Use preloaded twiddle factors
                         c = c_next;
@@ -2169,13 +3327,13 @@ protected:
                         if (likely(j + 1 < h_nbr_coef)) {
                             __builtin_prefetch(&sf1r[j + 1], 0, 3);
                             __builtin_prefetch(&sf2r[j + 1], 0, 3);
-                            _twiddle_cache.get_twiddle(pass, j + 1, c_next, s_next);
+                            _twiddle_cache->get_twiddle(pass, j + 1, c_next, s_next);
                         }
-
+                        
                         // Create vectorized twiddle factors
                         float32x4_t c_vec = vdupq_n_f32(c);
                         float32x4_t s_vec = vdupq_n_f32(s);
-
+                        
                         // Load data with proper casting
                         float32x4_t sf1r_j = vld1q_f32((float*)&sf1r[j]);
                         float32x4_t sf2r_j = vld1q_f32((float*)&sf2r[j]);
@@ -2189,7 +3347,7 @@ protected:
                         // Store results with proper casting
                         vst1q_f32((float*)&dfr[j], vaddq_f32(sf1r_j, v));
                         vst1q_f32((float*)&dfi[-j], vsubq_f32(sf1r_j, v));
-
+                        
                         // Load additional data with proper casting
                         float32x4_t sf1i_j = vld1q_f32((float*)&sf1i[j]);
                         
@@ -2232,11 +3390,11 @@ protected:
         double c, s;
         if (likely(_nbr_bits > 2)) {
             simd_double4 *sf, *df;
-
+            
             // Initial prefetch
             __builtin_prefetch(x, 0, 3);
-            __builtin_prefetch(_bit_rev_lut.get_ptr(), 0, 3);
-
+            __builtin_prefetch(_bit_rev_lut->get_ptr(), 0, 3);
+            
             if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 sf = f;
@@ -2244,10 +3402,10 @@ protected:
                 df = f;
                 sf = buffer_ptr;
             }
-
+            
             // First and second pass with bit-reversal
             constexpr int PREFETCH_DISTANCE = 8;
-            auto lut_ptr = _bit_rev_lut.get_ptr();
+            auto lut_ptr = _bit_rev_lut->get_ptr();
             
 #pragma unroll 2
             for (auto i = 0; i < _N; i += 4) {
@@ -2258,7 +3416,7 @@ protected:
                 
                 auto df2 = &df[i];
                 auto lut = &lut_ptr[i];
-
+                
                 // Proper casting for simd_double4 vector
                 double* x0_ptr = (double*)&x[lut[0]];
                 double* x1_ptr = (double*)&x[lut[1]];
@@ -2296,7 +3454,7 @@ protected:
                 vst1q_f64(df_ptr + 12, diff23_low);
                 vst1q_f64(df_ptr + 14, diff23_high);
             }
-
+            
             // Third pass with optimized SQ2_2 calculations
             const float64x1_t neg_sq2_2 = vdup_n_f64(-SQ2_2);
             const float64x1_t pos_sq2_2 = vdup_n_f64(SQ2_2);
@@ -2309,7 +3467,7 @@ protected:
                 if (likely(i + 8 < _N)) {
                     __builtin_prefetch(&df[i + 8], 0, 3);
                 }
-
+                
                 // Load with proper casting
                 double* df_ptr = (double*)df2;
                 float64x2_t df0_low = vld1q_f64(df_ptr);
@@ -2322,7 +3480,7 @@ protected:
                 float64x2_t sum04_high = vaddq_f64(df0_high, df4_high);
                 float64x2_t diff04_low = vsubq_f64(df0_low, df4_low);
                 float64x2_t diff04_high = vsubq_f64(df0_high, df4_high);
-
+                
                 // Load more data
                 float64x2_t df2val_low = vld1q_f64(df_ptr + 8);
                 float64x2_t df2val_high = vld1q_f64(df_ptr + 10);
@@ -2339,7 +3497,7 @@ protected:
                 vst1q_f64(sf_ptr + 10, df2val_high);
                 vst1q_f64(sf_ptr + 24, df6val_low);
                 vst1q_f64(sf_ptr + 26, df6val_high);
-
+                
                 // Load additional data
                 float64x2_t df1_low = vld1q_f64(df_ptr + 4);
                 float64x2_t df1_high = vld1q_f64(df_ptr + 6);
@@ -2349,14 +3507,14 @@ protected:
                 float64x2_t df5_high = vld1q_f64(df_ptr + 22);
                 float64x2_t df7_low = vld1q_f64(df_ptr + 28);
                 float64x2_t df7_high = vld1q_f64(df_ptr + 30);
-
+                
                 // Calculate v1 with proper operations for doubles
                 float64x2_t v1_low = vmulq_lane_f64(df5_low, neg_sq2_2, 0);
                 float64x2_t v1_high = vmulq_lane_f64(df5_high, neg_sq2_2, 0);
-               
+                
                 // Create a vector with the scalar value in both lanes
                 float64x2_t neg_sq2_2_vec = vdupq_n_f64(vget_lane_f64(neg_sq2_2, 0));
-
+                
                 // Multiply and add separately
                 float64x2_t df7_low_scaled = vmulq_f64(df7_low, neg_sq2_2_vec);
                 float64x2_t df7_high_scaled = vmulq_f64(df7_high, neg_sq2_2_vec);
@@ -2383,24 +3541,24 @@ protected:
                 vst1q_f64(sf_ptr + 28, vsubq_f64(v2_low, df3_low));
                 vst1q_f64(sf_ptr + 30, vsubq_f64(v2_high, df3_high));
             }
-
+            
             // Next passes
             for (auto pass = 3; pass < _nbr_bits; ++pass) {
                 auto nbr_coef = 1 << pass;
                 auto h_nbr_coef = nbr_coef >> 1;
                 auto d_nbr_coef = nbr_coef << 1;
-
+                
                 for (auto i = 0; i < _N; i += d_nbr_coef) {
                     auto sf1r = sf + i;
                     auto sf2r = sf1r + nbr_coef;
                     auto dfr = df + i;
                     auto dfi = dfr + nbr_coef;
-
+                    
                     // Prefetch
                     if (likely(i + d_nbr_coef < _N)) {
                         __builtin_prefetch(&sf[i + d_nbr_coef], 0, 3);
                     }
-
+                    
                     // Process extreme coefficients
                     double* sf1r_ptr = (double*)sf1r;
                     double* sf2r_ptr = (double*)sf2r;
@@ -2427,7 +3585,7 @@ protected:
                     vst1q_f64(dfr_h_ptr + 2, vld1q_f64(sf1r_h_ptr + 2));
                     vst1q_f64(dfi_h_ptr, vld1q_f64(sf2r_h_ptr));
                     vst1q_f64(dfi_h_ptr + 2, vld1q_f64(sf2r_h_ptr + 2));
-
+                    
                     // Process conjugate complex numbers
                     auto sf1i = &sf1r[h_nbr_coef];
                     auto sf2i = &sf1i[nbr_coef];
@@ -2435,9 +3593,9 @@ protected:
                     // Preload first twiddle factors
                     double c_next, s_next;
                     if (h_nbr_coef > 1) {
-                        _twiddle_cache.get_twiddle(pass, 1, c_next, s_next);
+                        _twiddle_cache->get_twiddle(pass, 1, c_next, s_next);
                     }
-
+                    
                     for (int j = 1; j < h_nbr_coef; ++j) {
                         // Use preloaded twiddle factors
                         c = c_next;
@@ -2447,13 +3605,13 @@ protected:
                         if (likely(j + 1 < h_nbr_coef)) {
                             __builtin_prefetch(&sf1r[j + 1], 0, 3);
                             __builtin_prefetch(&sf2r[j + 1], 0, 3);
-                            _twiddle_cache.get_twiddle(pass, j + 1, c_next, s_next);
+                            _twiddle_cache->get_twiddle(pass, j + 1, c_next, s_next);
                         }
-
+                        
                         // Create scalar factors
                         float64x1_t cos_val = vdup_n_f64(c);
                         float64x1_t sin_val = vdup_n_f64(s);
-
+                        
                         // Load data with proper casting
                         double* sf1r_j_ptr = (double*)&sf1r[j];
                         double* sf2r_j_ptr = (double*)&sf2r[j];
@@ -2470,7 +3628,7 @@ protected:
                         float64x2_t sf2r_j_high = vld1q_f64(sf2r_j_ptr + 2);
                         float64x2_t sf2i_j_low = vld1q_f64(sf2i_j_ptr);
                         float64x2_t sf2i_j_high = vld1q_f64(sf2i_j_ptr + 2);
-
+                        
                         // Calculate sf2r*c - sf2i*s (in separate operations for doubles)
                         float64x2_t sf2r_c_low = vmulq_lane_f64(sf2r_j_low, cos_val, 0);
                         float64x2_t sf2r_c_high = vmulq_lane_f64(sf2r_j_high, cos_val, 0);
@@ -2485,7 +3643,7 @@ protected:
                         vst1q_f64(dfr_j_ptr + 2, vaddq_f64(sf1r_j_high, v_high));
                         vst1q_f64(dfi_neg_j_ptr, vsubq_f64(sf1r_j_low, v_low));
                         vst1q_f64(dfi_neg_j_ptr + 2, vsubq_f64(sf1r_j_high, v_high));
-
+                        
                         // Calculate sf2r*s + sf2i*c
                         float64x2_t sf1i_j_low = vld1q_f64(sf1i_j_ptr);
                         float64x2_t sf1i_j_high = vld1q_f64(sf1i_j_ptr + 2);
@@ -2539,8 +3697,8 @@ protected:
             
             // OPTIMIZATION: Prefetch critical memory blocks at start
             __builtin_prefetch(&x[0], 0, 3);
-            __builtin_prefetch(&_bit_rev_lut.get_ptr()[0], 0, 3);
-
+            __builtin_prefetch(&_bit_rev_lut->get_ptr()[0], 0, 3);
+            
             if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 sf = f;
@@ -2548,12 +3706,12 @@ protected:
                 df = f;
                 sf = buffer_ptr;
             }
-
+            
             // First and second pass - BIT REVERSAL OPTIMIZATION
             constexpr int PREFETCH_DISTANCE = 8;
-            auto lut = _bit_rev_lut.get_ptr();
+            auto lut = _bit_rev_lut->get_ptr();
             
-            #pragma unroll 2
+#pragma unroll 2
             for (auto i = 0; i < _N; i += 4) {
                 if (likely(i + PREFETCH_DISTANCE < _N)) {
                     __builtin_prefetch(&lut[i + PREFETCH_DISTANCE], 0, 3);
@@ -2565,7 +3723,7 @@ protected:
                 auto lut1 = lut[i+1];
                 auto lut2 = lut[i+2];
                 auto lut3 = lut[i+3];
- 
+                
                 float32x4_t x0_low = vld1q_f32(&x[lut0].f[0]);
                 float32x4_t x0_high = vld1q_f32(&x[lut0].f[4]);
                 float32x4_t x1_low = vld1q_f32(&x[lut1].f[0]);
@@ -2590,7 +3748,7 @@ protected:
                 float32x4_t sum0123_high = vaddq_f32(sum01_high, sum23_high);
                 float32x4_t diff0123_low = vsubq_f32(sum01_low, sum23_low);
                 float32x4_t diff0123_high = vsubq_f32(sum01_high, sum23_high);
-
+                
                 // Store results with cache line optimization
                 vst1q_f32(&df2[0].f[0], sum0123_low);
                 vst1q_f32(&df2[0].f[4], sum0123_high);
@@ -2601,7 +3759,7 @@ protected:
                 vst1q_f32(&df2[3].f[0], diff23_low);
                 vst1q_f32(&df2[3].f[4], diff23_high);
             }
-
+            
             // Third pass with software pipelining
             static const float32x2_t sq2_constants = {-SQ2_2, SQ2_2};
             
@@ -2668,18 +3826,18 @@ protected:
                 float32x4_t df5_high = vld1q_f32(&df2[5].f[4]);
                 float32x4_t df7_low = vld1q_f32(&df2[7].f[0]);
                 float32x4_t df7_high = vld1q_f32(&df2[7].f[4]);
-
+                
                 // Optimized butterfly with lane-specific FMA
                 float32x4_t v1_low = vfmaq_lane_f32(vfmaq_lane_f32(vdupq_n_f32(0), df5_low, sq2_constants, 0),
-                                                  df7_low, sq2_constants, 0);
+                                                    df7_low, sq2_constants, 0);
                 float32x4_t v1_high = vfmaq_lane_f32(vfmaq_lane_f32(vdupq_n_f32(0), df5_high, sq2_constants, 0),
-                                                   df7_high, sq2_constants, 0);
-
+                                                     df7_high, sq2_constants, 0);
+                
                 float32x4_t v2_low = vfmaq_lane_f32(vfmaq_lane_f32(vdupq_n_f32(0), df5_low, sq2_constants, 1),
-                                                  df7_low, sq2_constants, 1);
+                                                    df7_low, sq2_constants, 1);
                 float32x4_t v2_high = vfmaq_lane_f32(vfmaq_lane_f32(vdupq_n_f32(0), df5_high, sq2_constants, 1),
-                                                   df7_high, sq2_constants, 1);
-
+                                                     df7_high, sq2_constants, 1);
+                
                 // Final stores
                 vst1q_f32(&sf2[1].f[0], vaddq_f32(df1_low, v1_low));
                 vst1q_f32(&sf2[1].f[4], vaddq_f32(df1_high, v1_high));
@@ -2691,26 +3849,26 @@ protected:
                 vst1q_f32(&sf2[7].f[0], vsubq_f32(v2_low, df3_low));
                 vst1q_f32(&sf2[7].f[4], vsubq_f32(v2_high, df3_high));
             }
-
+            
             // Next passes optimization with improved twiddle factor handling
             for (auto pass = 3; pass < _nbr_bits; ++pass) {
                 auto nbr_coef = 1 << pass;
                 auto h_nbr_coef = nbr_coef >> 1;
                 auto d_nbr_coef = nbr_coef << 1;
-
+                
 #pragma loop_count min(1), max(10), avg(6)
                 for (auto i = 0; i < _N; i += d_nbr_coef) {
                     auto sf1r = sf + i;
                     auto sf2r = sf1r + nbr_coef;
                     auto dfr = df + i;
                     auto dfi = dfr + nbr_coef;
-
+                    
                     // Prefetch outer loop data
                     if (likely(i + d_nbr_coef < _N)) {
                         __builtin_prefetch(&sf[i + d_nbr_coef], 0, 3);
                         __builtin_prefetch(&sf[i + d_nbr_coef + nbr_coef], 0, 3);
                     }
-
+                    
                     // Process extreme coefficients first (always real)
                     float32x4_t sf1r_0_low = vld1q_f32(&sf1r[0].f[0]);
                     float32x4_t sf1r_0_high = vld1q_f32(&sf1r[0].f[4]);
@@ -2731,7 +3889,7 @@ protected:
                     vst1q_f32(&dfr[h_nbr_coef].f[4], sf1r_h_high);
                     vst1q_f32(&dfi[h_nbr_coef].f[0], sf2r_h_low);
                     vst1q_f32(&dfi[h_nbr_coef].f[4], sf2r_h_high);
-
+                    
                     // Process conjugate complex numbers with twiddle factors
                     auto sf1i = &sf1r[h_nbr_coef];
                     auto sf2i = &sf1i[nbr_coef];
@@ -2739,9 +3897,9 @@ protected:
                     // Preload twiddle values for inner loop
                     float c_next, s_next;
                     if (h_nbr_coef > 1) {
-                        _twiddle_cache.get_twiddle(pass, 1, c_next, s_next);
+                        _twiddle_cache->get_twiddle(pass, 1, c_next, s_next);
                     }
-
+                    
                     for (int j = 1; j < h_nbr_coef; ++j) {
                         // Get current twiddle factors from preload
                         c = c_next;
@@ -2751,13 +3909,13 @@ protected:
                         if (likely(j + 1 < h_nbr_coef)) {
                             __builtin_prefetch(&sf1r[j + 1], 0, 3);
                             __builtin_prefetch(&sf2r[j + 1], 0, 3);
-                            _twiddle_cache.get_twiddle(pass, j + 1, c_next, s_next);
+                            _twiddle_cache->get_twiddle(pass, j + 1, c_next, s_next);
                         }
-
+                        
                         // Precompute twiddle factor vectors
                         float32x4_t c_vec = vdupq_n_f32(c);
                         float32x4_t s_vec = vdupq_n_f32(s);
-
+                        
                         // Load data
                         float32x4_t sf2r_j_low = vld1q_f32(&sf2r[j].f[0]);
                         float32x4_t sf2r_j_high = vld1q_f32(&sf2r[j].f[4]);
@@ -2775,7 +3933,7 @@ protected:
                         vst1q_f32(&dfr[j].f[4], vaddq_f32(sf1r_j_high, v_high));
                         vst1q_f32(&dfi[-j].f[0], vsubq_f32(sf1r_j_low, v_low));
                         vst1q_f32(&dfi[-j].f[4], vsubq_f32(sf1r_j_high, v_high));
-
+                        
                         // Compute second part: v = sf2r[j] * s + sf2i[j] * c
                         float32x4_t sf1i_j_low = vld1q_f32(&sf1i[j].f[0]);
                         float32x4_t sf1i_j_high = vld1q_f32(&sf1i[j].f[4]);
@@ -2822,8 +3980,8 @@ protected:
             
             // Initial prefetch for better memory performance
             __builtin_prefetch(&x[0], 0, 3);
-            __builtin_prefetch(&_bit_rev_lut.get_ptr()[0], 0, 3);
-
+            __builtin_prefetch(&_bit_rev_lut->get_ptr()[0], 0, 3);
+            
             if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 sf = f;
@@ -2831,10 +3989,10 @@ protected:
                 df = f;
                 sf = buffer_ptr;
             }
-
+            
             // First/second pass with bit-reversal and butterfly
             constexpr int PREFETCH_DISTANCE = 8;
-            auto lut = _bit_rev_lut.get_ptr();
+            auto lut = _bit_rev_lut->get_ptr();
             
 #pragma unroll 2
             for (auto i = 0; i < _N; i+=4) {
@@ -2848,7 +4006,7 @@ protected:
                 auto lut1 = &lut[i+1];
                 auto lut2 = &lut[i+2];
                 auto lut3 = &lut[i+3];
-
+                
                 // Load with prefetch assistance
                 float64x2_t x0_low  = vld1q_f64(&x[lut0].f[0]);
                 float64x2_t x0_high = vld1q_f64(&x[lut0].f[2]);
@@ -2875,7 +4033,7 @@ protected:
                 float64x2_t sum0123_high = vaddq_f64(sum01_high, sum23_high);
                 float64x2_t diff0123_low = vsubq_f64(sum01_low, sum23_low);
                 float64x2_t diff0123_high = vsubq_f64(sum01_high, sum23_high);
-
+                
                 // Store with optimized pattern for cache line utilization
                 vst1q_f64(&df2[0].f[0], sum0123_low);
                 vst1q_f64(&df2[0].f[2], sum0123_high);
@@ -2886,7 +4044,7 @@ protected:
                 vst1q_f64(&df2[3].f[0], diff23_low);
                 vst1q_f64(&df2[3].f[2], diff23_high);
             }
-
+            
             // Third pass with software pipelining
             // Precomputed constants
             const float64x1_t neg_sq2_2 = vdup_n_f64(-SQ2_2);
@@ -2927,7 +4085,7 @@ protected:
                 float64x2_t diff04_low = vsubq_f64(df0_low, df4_low);
                 float64x2_t sum04_high = vaddq_f64(df0_high, df4_high);
                 float64x2_t diff04_high = vsubq_f64(df0_high, df4_high);
-
+                
                 // Load more data in interleaved pattern
                 float64x2_t df2val_low = vld1q_f64(&df2[2].f[0]);
                 float64x2_t df2val_high = vld1q_f64(&df2[2].f[2]);
@@ -2942,7 +4100,7 @@ protected:
                 float64x2_t df5_high = vld1q_f64(&df2[5].f[2]);
                 float64x2_t df7_low = vld1q_f64(&df2[7].f[0]);
                 float64x2_t df7_high = vld1q_f64(&df2[7].f[2]);
-
+                
                 // Store early results while continuing computation
                 vst1q_f64(&sf2[0].f[0], sum04_low);
                 vst1q_f64(&sf2[0].f[2], sum04_high);
@@ -2952,14 +4110,14 @@ protected:
                 vst1q_f64(&sf2[2].f[2], df2val_high);
                 vst1q_f64(&sf2[6].f[0], df6val_low);
                 vst1q_f64(&sf2[6].f[2], df6val_high);
-
+                
                 // Optimized FMA operations for double precision
                 float64x2_t v1_low = vfmaq_lane_f64(vfmaq_lane_f64(vdupq_n_f64(0), df5_low, neg_sq2_2, 0), df7_low, neg_sq2_2, 0);
                 float64x2_t v1_high = vfmaq_lane_f64(vfmaq_lane_f64(vdupq_n_f64(0), df5_high, neg_sq2_2, 0), df7_high, neg_sq2_2, 0);
-
+                
                 float64x2_t v2_low = vfmaq_lane_f64(vfmaq_lane_f64(vdupq_n_f64(0), df5_low, pos_sq2_2, 0), df7_low, pos_sq2_2, 0);
                 float64x2_t v2_high = vfmaq_lane_f64(vfmaq_lane_f64(vdupq_n_f64(0), df5_high, pos_sq2_2, 0), df7_high, pos_sq2_2, 0);
-
+                
                 // Final stores
                 vst1q_f64(&sf2[1].f[0], vaddq_f64(df1_low, v1_low));
                 vst1q_f64(&sf2[1].f[2], vaddq_f64(df1_high, v1_high));
@@ -2971,25 +4129,25 @@ protected:
                 vst1q_f64(&sf2[7].f[0], vsubq_f64(v2_low, df3_low));
                 vst1q_f64(&sf2[7].f[2], vsubq_f64(v2_high, df3_high));
             }
-
+            
             // Later passes optimized
             for (auto pass = 3; pass < _nbr_bits; ++pass) {
                 auto nbr_coef = 1 << pass;
                 auto h_nbr_coef = nbr_coef >> 1;
                 auto d_nbr_coef = nbr_coef << 1;
-
+                
                 for (auto i = 0; i < _N; i += d_nbr_coef) {
                     auto sf1r = sf + i;
                     auto sf2r = sf1r + nbr_coef;
                     auto dfr = df + i;
                     auto dfi = dfr + nbr_coef;
-
+                    
                     // Prefetch for reduced memory latency
                     if (likely(i + d_nbr_coef < _N)) {
                         __builtin_prefetch(&sf[i + d_nbr_coef], 0, 3);
                         __builtin_prefetch(&sf[i + d_nbr_coef + nbr_coef], 0, 3);
                     }
-
+                    
                     // Process extreme coefficients
                     float64x2_t sf1r_0_low = vld1q_f64(&sf1r[0].f[0]);
                     float64x2_t sf1r_0_high = vld1q_f64(&sf1r[0].f[2]);
@@ -3005,17 +4163,17 @@ protected:
                     vst1q_f64(&dfr[h_nbr_coef].f[2], vld1q_f64(&sf1r[h_nbr_coef].f[2]));
                     vst1q_f64(&dfi[h_nbr_coef].f[0], vld1q_f64(&sf2r[h_nbr_coef].f[0]));
                     vst1q_f64(&dfi[h_nbr_coef].f[2], vld1q_f64(&sf2r[h_nbr_coef].f[2]));
-
+                    
                     // Process other conjugate complex numbers
                     auto sf1i = &sf1r[h_nbr_coef];
                     auto sf2i = &sf1i[nbr_coef];
-
+                    
                     // Preload first twiddle factors
                     double c_next, s_next;
                     if (h_nbr_coef > 1) {
-                        _twiddle_cache.get_twiddle(pass, 1, c_next, s_next);
+                        _twiddle_cache->get_twiddle(pass, 1, c_next, s_next);
                     }
-
+                    
                     for (int j = 1; j < h_nbr_coef; ++j) {
                         // Use preloaded twiddle factors
                         double c = c_next;
@@ -3027,13 +4185,13 @@ protected:
                             __builtin_prefetch(&sf2r[j + 1], 0, 3);
                             __builtin_prefetch(&sf1i[j + 1], 0, 3);
                             __builtin_prefetch(&sf2i[j + 1], 0, 3);
-                            _twiddle_cache.get_twiddle(pass, j + 1, c_next, s_next);
+                            _twiddle_cache->get_twiddle(pass, j + 1, c_next, s_next);
                         }
-
+                        
                         // Create vectorized twiddle factors
                         float64x1_t cos_val = vdup_n_f64(c);
                         float64x1_t sin_val = vdup_n_f64(s);
-
+                        
                         // Load data
                         float64x2_t sf1r_j_low = vld1q_f64(&sf1r[j].f[0]);
                         float64x2_t sf1r_j_high = vld1q_f64(&sf1r[j].f[2]);
@@ -3041,15 +4199,15 @@ protected:
                         float64x2_t sf2r_j_high = vld1q_f64(&sf2r[j].f[2]);
                         float64x2_t sf2i_j_low = vld1q_f64(&sf2i[j].f[0]);
                         float64x2_t sf2i_j_high = vld1q_f64(&sf2i[j].f[2]);
-
+                        
                         // Compute v = sf2r[j] * c - sf2i[j] * s
-        
+                        
                         // First calculate the products separately
                         float64x2_t sf2r_c_low = vmulq_lane_f64(sf2r_j_low, cos_val, 0);
                         float64x2_t sf2r_c_high = vmulq_lane_f64(sf2r_j_high, cos_val, 0);
                         float64x2_t sf2i_s_low = vmulq_lane_f64(sf2i_j_low, sin_val, 0);
                         float64x2_t sf2i_s_high = vmulq_lane_f64(sf2i_j_high, sin_val, 0);
-
+                        
                         // Then do the subtraction: sf2r * c - sf2i * s
                         float64x2_t v_low = vsubq_f64(sf2r_c_low, sf2i_s_low);
                         float64x2_t v_high = vsubq_f64(sf2r_c_high, sf2i_s_high);
@@ -3059,7 +4217,7 @@ protected:
                         vst1q_f64(&dfr[j].f[2], vaddq_f64(sf1r_j_high, v_high));
                         vst1q_f64(&dfi[-j].f[0], vsubq_f64(sf1r_j_low, v_low));
                         vst1q_f64(&dfi[-j].f[2], vsubq_f64(sf1r_j_high, v_high));
-
+                        
                         // Compute v = sf2r[j] * s + sf2i[j] * c
                         float64x2_t sf1i_j_low = vld1q_f64(&sf1i[j].f[0]);
                         float64x2_t sf1i_j_high = vld1q_f64(&sf1i[j].f[2]);
@@ -3108,12 +4266,12 @@ protected:
         if (unlikely(do_scale)) {
             mul = vdiv_f32(mul, vdup_n_f32((float)_N));
         }
-
+        
         if (likely(_nbr_bits > 2)) {
             simd_float2 *sf = (simd_float2*)f;
             simd_float2 *df;
             simd_float2 *df_temp;
-
+            
             if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 df_temp = x;
@@ -3121,24 +4279,24 @@ protected:
                 df = x;
                 df_temp = buffer_ptr;
             }
-
+            
             // First pass optimization
             for (auto pass = _nbr_bits - 1; pass >= 3; --pass) {
                 auto nbr_coef = 1 << pass;
                 auto h_nbr_coef = nbr_coef >> 1;
                 auto d_nbr_coef = nbr_coef << 1;
-
+                
                 for (auto i = 0; i < _N; i += d_nbr_coef) {
                     auto sfr = &sf[i];
                     auto sfi = &sfr[nbr_coef];
                     auto df1r = &df[i];
                     auto df2r = &df1r[nbr_coef];
-
+                    
                     // Prefetch next block
                     if (likely(i + d_nbr_coef < _N)) {
                         __builtin_prefetch(&sf[i + d_nbr_coef], 0, 3);
                     }
-
+                    
                     // Process extreme coefficients with proper casting
                     float32x2_t sfr_0 = vld1_f32((float*)&sfr[0]);
                     float32x2_t sfr_nbr_coef = vld1_f32((float*)&sfr[nbr_coef]);
@@ -3152,7 +4310,7 @@ protected:
                     
                     vst1_f32((float*)&df1r[h_nbr_coef], vmul_f32(sfr_h_nbr_coef, c2));
                     vst1_f32((float*)&df2r[h_nbr_coef], vmul_f32(sfi_h_nbr_coef, c2));
-
+                    
                     // Process conjugate complex numbers
                     auto df1i = &df1r[h_nbr_coef];
                     auto df2i = &df1i[nbr_coef];
@@ -3162,7 +4320,7 @@ protected:
                     if (h_nbr_coef > 1) {
                         _twiddle_cache->get_twiddle(pass, 1, c_next, s_next);
                     }
-
+                    
                     for (int j = 1; j < h_nbr_coef; ++j) {
                         // Use preloaded twiddle factors
                         float c = c_next;
@@ -3174,21 +4332,21 @@ protected:
                             __builtin_prefetch(&sfi[-(j + 1)], 0, 3);
                             _twiddle_cache->get_twiddle(pass, j + 1, c_next, s_next);
                         }
-
+                        
                         // Load data with proper casting for float2
                         float32x2_t sfr_j = vld1_f32((float*)&sfr[j]);
                         float32x2_t sfi_neg_j = vld1_f32((float*)&sfi[-j]);
                         float32x2_t sfi_j = vld1_f32((float*)&sfi[j]);
                         float32x2_t sfi_nbr_j = vld1_f32((float*)&sfi[nbr_coef - j]);
-
+                        
                         // Calculate df1r and df1i with float2 operations
                         vst1_f32((float*)&df1r[j], vadd_f32(sfr_j, sfi_neg_j));
                         vst1_f32((float*)&df1i[j], vsub_f32(sfi_j, sfi_nbr_j));
-
+                        
                         // Calculate vr and vi
                         float32x2_t vr = vsub_f32(sfr_j, sfi_neg_j);
                         float32x2_t vi = vadd_f32(sfi_j, sfi_nbr_j);
-
+                        
                         // Calculate df2r and df2i with optimized operations
                         float32x2_t df2r_j = vmla_n_f32(vmul_n_f32(vr, c), vi, s);
                         float32x2_t df2i_j = vmls_n_f32(vmul_n_f32(vi, c), vr, s);
@@ -3198,7 +4356,7 @@ protected:
                         vst1_f32((float*)&df2i[j], df2i_j);
                     }
                 }
-
+                
                 // Prepare for next pass
                 if (pass < _nbr_bits - 1) {
                     auto tmp = df;
@@ -3209,7 +4367,7 @@ protected:
                     df = df_temp;
                 }
             }
-
+            
             // Antepenultimate pass with SQ2_2 optimization
             const float32x2_t sq2_2 = vdup_n_f32(SQ2_2);
             
@@ -3218,7 +4376,7 @@ protected:
                 if (likely(i + 8 < _N)) {
                     __builtin_prefetch(&sf[i + 8], 0, 3);
                 }
-
+                
                 // Load data with proper casting
                 float32x2_t f0 = vld1_f32((float*)&sf[i]);
                 float32x2_t f4 = vld1_f32((float*)&sf[i+4]);
@@ -3254,7 +4412,7 @@ protected:
                 vst1_f32((float*)&df[i+5], vmul_f32(vadd_f32(vr, vi), sq2_2));
                 vst1_f32((float*)&df[i+7], vmul_f32(vsub_f32(vi, vr), sq2_2));
             }
-
+            
             // Penultimate and last pass with bit-reversal
             auto lut_ptr = _bit_rev_lut->get_ptr();
             
@@ -3266,40 +4424,40 @@ protected:
                 if (likely(i + 8 < _N)) {
                     __builtin_prefetch(&x[lut[8]], 1, 0);
                 }
-
+                
                 // Process first 4 outputs with proper casting
                 {
                     float32x2_t sf0 = vld1_f32((float*)&sf2[0]);
                     float32x2_t sf1 = vld1_f32((float*)&sf2[1]);
                     float32x2_t sf2val = vld1_f32((float*)&sf2[2]);
                     float32x2_t sf3 = vld1_f32((float*)&sf2[3]);
-
+                    
                     // Butterfly calculation
                     float32x2_t b_0 = vadd_f32(sf0, sf2val);
                     float32x2_t b_2 = vsub_f32(sf0, sf2val);
                     float32x2_t b_1 = vmul_f32(sf1, c2);
                     float32x2_t b_3 = vmul_f32(sf3, c2);
-
+                    
                     // Apply scaling and store with bit-reversal
                     vst1_f32((float*)&x[lut[0]], vmul_f32(vadd_f32(b_0, b_1), mul));
                     vst1_f32((float*)&x[lut[1]], vmul_f32(vsub_f32(b_0, b_1), mul));
                     vst1_f32((float*)&x[lut[2]], vmul_f32(vadd_f32(b_2, b_3), mul));
                     vst1_f32((float*)&x[lut[3]], vmul_f32(vsub_f32(b_2, b_3), mul));
                 }
-
+                
                 // Process second 4 outputs with proper casting
                 {
                     float32x2_t sf4 = vld1_f32((float*)&sf2[4]);
                     float32x2_t sf5 = vld1_f32((float*)&sf2[5]);
                     float32x2_t sf6 = vld1_f32((float*)&sf2[6]);
                     float32x2_t sf7 = vld1_f32((float*)&sf2[7]);
-
+                    
                     // Butterfly calculation
                     float32x2_t b_0 = vadd_f32(sf4, sf6);
                     float32x2_t b_2 = vsub_f32(sf4, sf6);
                     float32x2_t b_1 = vmul_f32(sf5, c2);
                     float32x2_t b_3 = vmul_f32(sf7, c2);
-
+                    
                     // Apply scaling and store with bit-reversal
                     vst1_f32((float*)&x[lut[4]], vmul_f32(vadd_f32(b_0, b_1), mul));
                     vst1_f32((float*)&x[lut[5]], vmul_f32(vsub_f32(b_0, b_1), mul));
@@ -3341,12 +4499,12 @@ protected:
         if (unlikely(do_scale)) {
             mul = vdivq_f32(mul, vdupq_n_f32((float)_N));
         }
-
+        
         if (likely(_nbr_bits > 2)) {
             simd_float4 *sf = (simd_float4*)f;
             simd_float4 *df;
             simd_float4 *df_temp;
-
+            
             if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 df_temp = x;
@@ -3354,24 +4512,24 @@ protected:
                 df = x;
                 df_temp = buffer_ptr;
             }
-
+            
             // First pass with prefetching and optimization
             for (auto pass = _nbr_bits - 1; pass >= 3; --pass) {
                 auto nbr_coef = 1 << pass;
                 auto h_nbr_coef = nbr_coef >> 1;
                 auto d_nbr_coef = nbr_coef << 1;
-
+                
                 for (auto i = 0; i < _N; i += d_nbr_coef) {
                     auto sfr = &sf[i];
                     auto sfi = &sfr[nbr_coef];
                     auto df1r = &df[i];
                     auto df2r = &df1r[nbr_coef];
-
+                    
                     // Prefetch next block
                     if (likely(i + d_nbr_coef < _N)) {
                         __builtin_prefetch(&sf[i + d_nbr_coef], 0, 3);
                     }
-
+                    
                     // Process extreme coefficients
                     float32x4_t sfr_0 = vld1q_f32((float*)&sfr[0]);
                     float32x4_t sfr_nbr_coef = vld1q_f32(&sfr[nbr_coef].f[0]);
@@ -3385,7 +4543,7 @@ protected:
                     
                     vst1q_f32(&df1r[h_nbr_coef].f[0], vmulq_f32(sfr_h_nbr_coef, c2));
                     vst1q_f32(&df2r[h_nbr_coef].f[0], vmulq_f32(sfi_h_nbr_coef, c2));
-
+                    
                     // Process conjugate complex numbers
                     auto df1i = &df1r[h_nbr_coef];
                     auto df2i = &df1i[nbr_coef];
@@ -3393,9 +4551,9 @@ protected:
                     // Preload first twiddle factors
                     float c_next, s_next;
                     if (h_nbr_coef > 1) {
-                        _twiddle_cache.get_twiddle(pass, 1, c_next, s_next);
+                        _twiddle_cache->get_twiddle(pass, 1, c_next, s_next);
                     }
-
+                    
                     for (int j = 1; j < h_nbr_coef; ++j) {
                         // Use preloaded twiddle factors
                         float c = c_next;
@@ -3405,27 +4563,27 @@ protected:
                         if (likely(j + 1 < h_nbr_coef)) {
                             __builtin_prefetch(&sfr[j + 1], 0, 3);
                             __builtin_prefetch(&sfi[-(j + 1)], 0, 3);
-                            _twiddle_cache.get_twiddle(pass, j + 1, c_next, s_next);
+                            _twiddle_cache->get_twiddle(pass, j + 1, c_next, s_next);
                         }
-
+                        
                         // Load vectorized twiddle factors
                         float32x4_t c_vec = vdupq_n_f32(c);
                         float32x4_t s_vec = vdupq_n_f32(s);
-
+                        
                         // Load data with optimized memory access patterns
                         float32x4_t sfr_j = vld1q_f32((float*)&sfr[j]);
                         float32x4_t sfi_neg_j = vld1q_f32(&sfi[-j].f[0]);
                         float32x4_t sfi_j = vld1q_f32(&sfi[j].f[0]);
                         float32x4_t sfi_nbr_j = vld1q_f32(&sfi[nbr_coef - j].f[0]);
-
+                        
                         // Calculate df1r and df1i
                         vst1q_f32((float*)&df1r[j], vaddq_f32(sfr_j, sfi_neg_j));
                         vst1q_f32(&df1i[j].f[0], vsubq_f32(sfi_j, sfi_nbr_j));
-
+                        
                         // Calculate vr and vi
                         float32x4_t vr = vsubq_f32(sfr_j, sfi_neg_j);
                         float32x4_t vi = vaddq_f32(sfi_j, sfi_nbr_j);
-
+                        
                         // Calculate with optimized FMA
                         float32x4_t df2r_j = vfmaq_f32(vmulq_f32(vr, c_vec), vi, s_vec);
                         float32x4_t df2i_j = vfmsq_f32(vmulq_f32(vi, c_vec), vr, s_vec);
@@ -3435,7 +4593,7 @@ protected:
                         vst1q_f32(&df2i[j].f[0], df2i_j);
                     }
                 }
-
+                
                 // Prepare for next pass
                 if (pass < _nbr_bits - 1) {
                     auto tmp = df;
@@ -3446,7 +4604,7 @@ protected:
                     df = df_temp;
                 }
             }
-
+            
             // Antepenultimate pass with SQ2_2 optimization
             const float32x4_t sq2_2 = vdupq_n_f32(SQ2_2);
             
@@ -3458,7 +4616,7 @@ protected:
                 if (likely(i + 8 < _N)) {
                     __builtin_prefetch(&sf[i + 8], 0, 3);
                 }
-
+                
                 // Load and process data in interleaved fashion
                 float32x4_t f0 = vld1q_f32((float*)&sf2[0]);
                 float32x4_t f4 = vld1q_f32((float*)&sf2[4]);
@@ -3494,9 +4652,9 @@ protected:
                 vst1q_f32((float*)&df2[5], vmulq_f32(vaddq_f32(vr, vi), sq2_2));
                 vst1q_f32((float*)&df2[7], vmulq_f32(vsubq_f32(vi, vr), sq2_2));
             }
-
+            
             // Penultimate and last pass with bit-reversal
-            auto lut_ptr = _bit_rev_lut.get_ptr();
+            auto lut_ptr = _bit_rev_lut->get_ptr();
             
             for (auto i = 0; i < _N; i += 8) {
                 auto lut = lut_ptr + i;
@@ -3506,40 +4664,40 @@ protected:
                 if (likely(i + 8 < _N)) {
                     __builtin_prefetch(&x[lut[8]], 1, 0);
                 }
-
+                
                 // Process first 4 outputs
                 {
                     float32x4_t sf0 = vld1q_f32((float*)&sf2[0]);
                     float32x4_t sf1 = vld1q_f32((float*)&sf2[1]);
                     float32x4_t sf2val = vld1q_f32((float*)&sf2[2]);
                     float32x4_t sf3 = vld1q_f32((float*)&sf2[3]);
-
+                    
                     // Butterfly calculation
                     float32x4_t b_0 = vaddq_f32(sf0, sf2val);
                     float32x4_t b_2 = vsubq_f32(sf0, sf2val);
                     float32x4_t b_1 = vmulq_f32(sf1, c2);
                     float32x4_t b_3 = vmulq_f32(sf3, c2);
-
+                    
                     // Apply scaling and store using bit-reversal
                     vst1q_f32(&x[lut[0]].f[0], vmulq_f32(vaddq_f32(b_0, b_1), mul));
                     vst1q_f32(&x[lut[1]].f[0], vmulq_f32(vsubq_f32(b_0, b_1), mul));
                     vst1q_f32(&x[lut[2]].f[0], vmulq_f32(vaddq_f32(b_2, b_3), mul));
                     vst1q_f32(&x[lut[3]].f[0], vmulq_f32(vsubq_f32(b_2, b_3), mul));
                 }
-
+                
                 // Process second 4 outputs
                 {
                     float32x4_t sf4 = vld1q_f32((float*)&sf2[4]);
                     float32x4_t sf5 = vld1q_f32((float*)&sf2[5]);
                     float32x4_t sf6 = vld1q_f32((float*)&sf2[6]);
                     float32x4_t sf7 = vld1q_f32((float*)&sf2[7]);
-
+                    
                     // Butterfly calculation
                     float32x4_t b_0 = vaddq_f32(sf4, sf6);
                     float32x4_t b_2 = vsubq_f32(sf4, sf6);
                     float32x4_t b_1 = vmulq_f32(sf5, c2);
                     float32x4_t b_3 = vmulq_f32(sf7, c2);
-
+                    
                     // Apply scaling and store using bit-reversal
                     vst1q_f32(&x[lut[4]].f[0], vmulq_f32(vaddq_f32(b_0, b_1), mul));
                     vst1q_f32(&x[lut[5]].f[0], vmulq_f32(vsubq_f32(b_0, b_1), mul));
@@ -3582,12 +4740,12 @@ protected:
         if (unlikely(do_scale)) {
             mul = vdivq_f64(mul, vdupq_n_f64((double)_N));
         }
-
+        
         if (likely(_nbr_bits > 2)) {
             simd_double2 *sf = (simd_double2*)f;
             simd_double2 *df;
             simd_double2 *df_temp;
-
+            
             if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 df_temp = x;
@@ -3595,24 +4753,24 @@ protected:
                 df = x;
                 df_temp = buffer_ptr;
             }
-
+            
             // First pass optimization
             for (auto pass = _nbr_bits - 1; pass >= 3; --pass) {
                 auto nbr_coef = 1 << pass;
                 auto h_nbr_coef = nbr_coef >> 1;
                 auto d_nbr_coef = nbr_coef << 1;
-
+                
                 for (auto i = 0; i < _N; i += d_nbr_coef) {
                     auto sfr = &sf[i];
                     auto sfi = &sfr[nbr_coef];
                     auto df1r = &df[i];
                     auto df2r = &df1r[nbr_coef];
-
+                    
                     // Prefetch next block
                     if (likely(i + d_nbr_coef < _N)) {
                         __builtin_prefetch(&sf[i + d_nbr_coef], 0, 3);
                     }
-
+                    
                     // Process extreme coefficients with proper casting
                     float64x2_t sfr_0 = vld1q_f64((double*)&sfr[0]);
                     float64x2_t sfr_nbr_coef = vld1q_f64((double*)&sfr[nbr_coef]);
@@ -3626,7 +4784,7 @@ protected:
                     
                     vst1q_f64((double*)&df1r[h_nbr_coef], vmulq_f64(sfr_h_nbr_coef, c2));
                     vst1q_f64((double*)&df2r[h_nbr_coef], vmulq_f64(sfi_h_nbr_coef, c2));
-
+                    
                     // Process conjugate complex numbers
                     auto df1i = &df1r[h_nbr_coef];
                     auto df2i = &df1i[nbr_coef];
@@ -3636,7 +4794,7 @@ protected:
                     if (h_nbr_coef > 1) {
                         _twiddle_cache->get_twiddle(pass, 1, c_next, s_next);
                     }
-
+                    
                     for (int j = 1; j < h_nbr_coef; ++j) {
                         // Use preloaded twiddle factors
                         double c = c_next;
@@ -3648,21 +4806,21 @@ protected:
                             __builtin_prefetch(&sfi[-(j + 1)], 0, 3);
                             _twiddle_cache->get_twiddle(pass, j + 1, c_next, s_next);
                         }
-
+                        
                         // Load data with proper casting
                         float64x2_t sfr_j = vld1q_f64((double*)&sfr[j]);
                         float64x2_t sfi_neg_j = vld1q_f64((double*)&sfi[-j]);
                         float64x2_t sfi_j = vld1q_f64((double*)&sfi[j]);
                         float64x2_t sfi_nbr_j = vld1q_f64((double*)&sfi[nbr_coef - j]);
-
+                        
                         // Calculate df1r and df1i values
                         vst1q_f64((double*)&df1r[j], vaddq_f64(sfr_j, sfi_neg_j));
                         vst1q_f64((double*)&df1i[j], vsubq_f64(sfi_j, sfi_nbr_j));
-
+                        
                         // Calculate vr and vi
                         float64x2_t vr = vsubq_f64(sfr_j, sfi_neg_j);
                         float64x2_t vi = vaddq_f64(sfi_j, sfi_nbr_j);
-
+                        
                         // Calculate with scalar multiplication (no vmlaq_lane_f64)
                         float64x2_t c_vec = vdupq_n_f64(c);
                         float64x2_t s_vec = vdupq_n_f64(s);
@@ -3680,7 +4838,7 @@ protected:
                         vst1q_f64((double*)&df2i[j], df2i_j);
                     }
                 }
-
+                
                 // Prepare for next pass
                 if (pass < _nbr_bits - 1) {
                     auto tmp = df;
@@ -3691,7 +4849,7 @@ protected:
                     df = df_temp;
                 }
             }
-
+            
             // Antepenultimate pass with SQ2_2 optimization
             const float64x2_t sq2_2 = vdupq_n_f64(SQ2_2);
             
@@ -3700,7 +4858,7 @@ protected:
                 if (likely(i + 8 < _N)) {
                     __builtin_prefetch(&sf[i + 8], 0, 3);
                 }
-
+                
                 // Load with proper casting
                 float64x2_t f0 = vld1q_f64((double*)&sf[i]);
                 float64x2_t f4 = vld1q_f64((double*)&sf[i+4]);
@@ -3737,7 +4895,7 @@ protected:
                 vst1q_f64((double*)&df[i+5], vmulq_f64(vaddq_f64(vr, vi), sq2_2));
                 vst1q_f64((double*)&df[i+7], vmulq_f64(vsubq_f64(vi, vr), sq2_2));
             }
-
+            
             // Penultimate and last pass with bit-reversal
             auto lut_ptr = _bit_rev_lut->get_ptr();
             
@@ -3749,40 +4907,40 @@ protected:
                 if (likely(i + 8 < _N)) {
                     __builtin_prefetch(&x[lut[8]], 1, 0);
                 }
-
+                
                 // Process first 4 outputs
                 {
                     float64x2_t sf0 = vld1q_f64((double*)&sf2[0]);
                     float64x2_t sf1 = vld1q_f64((double*)&sf2[1]);
                     float64x2_t sf2val = vld1q_f64((double*)&sf2[2]);
                     float64x2_t sf3 = vld1q_f64((double*)&sf2[3]);
-
+                    
                     // Calculate butterfly values
                     float64x2_t b_0 = vaddq_f64(sf0, sf2val);
                     float64x2_t b_2 = vsubq_f64(sf0, sf2val);
                     float64x2_t b_1 = vmulq_f64(sf1, c2);
                     float64x2_t b_3 = vmulq_f64(sf3, c2);
-
+                    
                     // Apply scaling and store with bit-reversal
                     vst1q_f64((double*)&x[lut[0]], vmulq_f64(vaddq_f64(b_0, b_1), mul));
                     vst1q_f64((double*)&x[lut[1]], vmulq_f64(vsubq_f64(b_0, b_1), mul));
                     vst1q_f64((double*)&x[lut[2]], vmulq_f64(vaddq_f64(b_2, b_3), mul));
                     vst1q_f64((double*)&x[lut[3]], vmulq_f64(vsubq_f64(b_2, b_3), mul));
                 }
-
+                
                 // Process second 4 outputs
                 {
                     float64x2_t sf4 = vld1q_f64((double*)&sf2[4]);
                     float64x2_t sf5 = vld1q_f64((double*)&sf2[5]);
                     float64x2_t sf6 = vld1q_f64((double*)&sf2[6]);
                     float64x2_t sf7 = vld1q_f64((double*)&sf2[7]);
-
+                    
                     // Calculate butterfly values
                     float64x2_t b_0 = vaddq_f64(sf4, sf6);
                     float64x2_t b_2 = vsubq_f64(sf4, sf6);
                     float64x2_t b_1 = vmulq_f64(sf5, c2);
                     float64x2_t b_3 = vmulq_f64(sf7, c2);
-
+                    
                     // Apply scaling and store with bit-reversal
                     vst1q_f64((double*)&x[lut[4]], vmulq_f64(vaddq_f64(b_0, b_1), mul));
                     vst1q_f64((double*)&x[lut[5]], vmulq_f64(vsubq_f64(b_0, b_1), mul));
@@ -3885,7 +5043,7 @@ protected:
                     // Preload first twiddle factors
                     double c_next, s_next;
                     if (h_nbr_coef > 1) {
-                        _twiddle_cache.get_twiddle(pass, 1, c_next, s_next);
+                        _twiddle_cache->get_twiddle(pass, 1, c_next, s_next);
                     }
                     
                     for (int j = 1; j < h_nbr_coef; ++j) {
@@ -3897,7 +5055,7 @@ protected:
                         if (likely(j + 1 < h_nbr_coef)) {
                             __builtin_prefetch(&sfr[j + 1], 0, 3);
                             __builtin_prefetch(&sfi[-(j + 1)], 0, 3);
-                            _twiddle_cache.get_twiddle(pass, j + 1, c_next, s_next);
+                            _twiddle_cache->get_twiddle(pass, j + 1, c_next, s_next);
                         }
                         
                         // Create scalar twiddle factors
@@ -4041,7 +5199,7 @@ protected:
             }
             
             // Penultimate and last pass with bit reversal
-            auto lut_ptr = _bit_rev_lut.get_ptr();
+            auto lut_ptr = _bit_rev_lut->get_ptr();
             
             for (auto i = 0; i < _N; i += 8) {
                 auto lut = lut_ptr + i;
@@ -4152,7 +5310,7 @@ protected:
             vst1q_f64((double*)&x[0] + 2, vmulq_f64(vld1q_f64((double*)&f[0] + 2), mul));
         }
     }
-            
+    
     void do_ifft_neon_f8(const simd_float8 *_Nonnull f, simd_float8 *_Nonnull x, bool do_scale = false)
     {
         const float32x4_t c2 = vdupq_n_f32(2.0f);
@@ -4162,12 +5320,12 @@ protected:
         if (unlikely(do_scale)) {
             mul = vdivq_f32(mul, vdupq_n_f32((float)_N));
         }
-
+        
         if (likely(_nbr_bits > 2)) {
             simd_float8 *sf = (simd_float8*)f;
             simd_float8 *df;
             simd_float8 *df_temp;
-
+            
             if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 df_temp = x;
@@ -4175,25 +5333,25 @@ protected:
                 df = x;
                 df_temp = buffer_ptr;
             }
-
+            
             // Optimized first pass with prefetching and software pipelining
             for (auto pass = _nbr_bits - 1; pass >= 3; --pass) {
                 auto nbr_coef = 1 << pass;
                 auto h_nbr_coef = nbr_coef >> 1;
                 auto d_nbr_coef = nbr_coef << 1;
-
+                
                 for (auto i = 0; i < _N; i += d_nbr_coef) {
                     auto sfr = &sf[i];
                     auto sfi = &sfr[nbr_coef];
                     auto df1r = &df[i];
                     auto df2r = &df1r[nbr_coef];
-
+                    
                     // Prefetch next block
                     if (likely(i + d_nbr_coef < _N)) {
                         __builtin_prefetch(&sf[i + d_nbr_coef], 0, 3);
                         __builtin_prefetch(&sf[i + d_nbr_coef + nbr_coef], 0, 3);
                     }
-
+                    
                     // Optimized extreme coefficient processing
                     float32x4_t sfr_0_low = vld1q_f32(&sfr[0].f[0]);
                     float32x4_t sfr_0_high = vld1q_f32(&sfr[0].f[4]);
@@ -4216,7 +5374,7 @@ protected:
                     vst1q_f32(&df1r[h_nbr_coef].f[4], vmulq_f32(sfr_h_nbr_coef_high, c2));
                     vst1q_f32(&df2r[h_nbr_coef].f[0], vmulq_f32(sfi_h_nbr_coef_low, c2));
                     vst1q_f32(&df2r[h_nbr_coef].f[4], vmulq_f32(sfi_h_nbr_coef_high, c2));
-
+                    
                     // Process conjugate complex numbers
                     auto df1i = &df1r[h_nbr_coef];
                     auto df2i = &df1i[nbr_coef];
@@ -4224,9 +5382,9 @@ protected:
                     // Twiddle factor preloading
                     float c_next, s_next;
                     if (h_nbr_coef > 1) {
-                        _twiddle_cache.get_twiddle(pass, 1, c_next, s_next);
+                        _twiddle_cache->get_twiddle(pass, 1, c_next, s_next);
                     }
-
+                    
                     for (int j = 1; j < h_nbr_coef; ++j) {
                         // Use preloaded twiddle factors
                         float c = c_next;
@@ -4238,13 +5396,13 @@ protected:
                             __builtin_prefetch(&sfi[-(j + 1)], 0, 3);
                             __builtin_prefetch(&sfi[j + 1], 0, 3);
                             __builtin_prefetch(&sfi[nbr_coef - (j + 1)], 0, 3);
-                            _twiddle_cache.get_twiddle(pass, j + 1, c_next, s_next);
+                            _twiddle_cache->get_twiddle(pass, j + 1, c_next, s_next);
                         }
-
+                        
                         // Create vectorized twiddle factors
                         float32x4_t c_vec = vdupq_n_f32(c);
                         float32x4_t s_vec = vdupq_n_f32(s);
-
+                        
                         // Load values with grouping for cache efficiency
                         float32x4_t sfr_j_low = vld1q_f32(&sfr[j].f[0]);
                         float32x4_t sfr_j_high = vld1q_f32(&sfr[j].f[4]);
@@ -4254,19 +5412,19 @@ protected:
                         float32x4_t sfi_j_high = vld1q_f32(&sfi[j].f[4]);
                         float32x4_t sfi_nbr_j_low = vld1q_f32(&sfi[nbr_coef - j].f[0]);
                         float32x4_t sfi_nbr_j_high = vld1q_f32(&sfi[nbr_coef - j].f[4]);
-
+                        
                         // Compute df1r and df1i values
                         vst1q_f32(&df1r[j].f[0], vaddq_f32(sfr_j_low, sfi_neg_j_low));
                         vst1q_f32(&df1r[j].f[4], vaddq_f32(sfr_j_high, sfi_neg_j_high));
                         vst1q_f32(&df1i[j].f[0], vsubq_f32(sfi_j_low, sfi_nbr_j_low));
                         vst1q_f32(&df1i[j].f[4], vsubq_f32(sfi_j_high, sfi_nbr_j_high));
-
+                        
                         // Calculate vr and vi
                         float32x4_t vr_low = vsubq_f32(sfr_j_low, sfi_neg_j_low);
                         float32x4_t vr_high = vsubq_f32(sfr_j_high, sfi_neg_j_high);
                         float32x4_t vi_low = vaddq_f32(sfi_j_low, sfi_nbr_j_low);
                         float32x4_t vi_high = vaddq_f32(sfi_j_high, sfi_nbr_j_high);
-
+                        
                         // Compute with optimized FMA operations
                         float32x4_t df2r_j_low = vfmaq_f32(vmulq_f32(vr_low, c_vec), vi_low, s_vec);
                         float32x4_t df2r_j_high = vfmaq_f32(vmulq_f32(vr_high, c_vec), vi_high, s_vec);
@@ -4281,7 +5439,7 @@ protected:
                         vst1q_f32(&df2i[j].f[4], df2i_j_high);
                     }
                 }
-
+                
                 // Prepare for next pass
                 if (pass < _nbr_bits - 1) {
                     auto tmp = df;
@@ -4292,7 +5450,7 @@ protected:
                     df = df_temp;
                 }
             }
-
+            
             // Antepenultimate pass optimization
             const float32x4_t sq2_2 = vdupq_n_f32(SQ2_2);
             
@@ -4304,7 +5462,7 @@ protected:
                 if (likely(i + 8 < _N)) {
                     __builtin_prefetch(&sf[i + 8], 0, 3);
                 }
-
+                
                 // Load data with interleaved prefetching and computation
                 float32x4_t f0_low = vld1q_f32(&sf2[0].f[0]);
                 float32x4_t f0_high = vld1q_f32(&sf2[0].f[4]);
@@ -4363,9 +5521,9 @@ protected:
                 vst1q_f32(&df2[7].f[0], vmulq_f32(vsubq_f32(vi_low, vr_low), sq2_2));
                 vst1q_f32(&df2[7].f[4], vmulq_f32(vsubq_f32(vi_high, vr_high), sq2_2));
             }
-
+            
             // Penultimate and last pass optimized with bit reversal
-            auto lut_ptr = _bit_rev_lut.get_ptr();
+            auto lut_ptr = _bit_rev_lut->get_ptr();
             
             for (auto i = 0; i < _N; i += 8) {
                 auto lut = lut_ptr + i;
@@ -4375,7 +5533,7 @@ protected:
                 if (likely(i + 8 < _N)) {
                     __builtin_prefetch(&x[lut[8]], 1, 0);
                 }
-
+                
                 // Process first 4 outputs with FMA optimizations
                 {
                     float32x4_t sf0_low = vld1q_f32(&sf2[0].f[0]);
@@ -4386,7 +5544,7 @@ protected:
                     float32x4_t sf2val_high = vld1q_f32(&sf2[2].f[4]);
                     float32x4_t sf3_low = vld1q_f32(&sf2[3].f[0]);
                     float32x4_t sf3_high = vld1q_f32(&sf2[3].f[4]);
-
+                    
                     // Calculate butterfly values using FMA operations
                     float32x4_t b_0_low = vaddq_f32(sf0_low, sf2val_low);
                     float32x4_t b_0_high = vaddq_f32(sf0_high, sf2val_high);
@@ -4396,7 +5554,7 @@ protected:
                     float32x4_t b_1_high = vmulq_f32(sf1_high, c2);
                     float32x4_t b_3_low = vmulq_f32(sf3_low, c2);
                     float32x4_t b_3_high = vmulq_f32(sf3_high, c2);
-
+                    
                     // Apply scaling and store with bit-reversal
                     vst1q_f32(&x[lut[0]].f[0], vmulq_f32(vaddq_f32(b_0_low, b_1_low), mul));
                     vst1q_f32(&x[lut[0]].f[4], vmulq_f32(vaddq_f32(b_0_high, b_1_high), mul));
@@ -4407,7 +5565,7 @@ protected:
                     vst1q_f32(&x[lut[3]].f[0], vmulq_f32(vsubq_f32(b_2_low, b_3_low), mul));
                     vst1q_f32(&x[lut[3]].f[4], vmulq_f32(vsubq_f32(b_2_high, b_3_high), mul));
                 }
-
+                
                 // Process second 4 outputs with similar optimizations
                 {
                     float32x4_t sf4_low = vld1q_f32(&sf2[4].f[0]);
@@ -4418,7 +5576,7 @@ protected:
                     float32x4_t sf6_high = vld1q_f32(&sf2[6].f[4]);
                     float32x4_t sf7_low = vld1q_f32(&sf2[7].f[0]);
                     float32x4_t sf7_high = vld1q_f32(&sf2[7].f[4]);
-
+                    
                     float32x4_t b_0_low = vaddq_f32(sf4_low, sf6_low);
                     float32x4_t b_0_high = vaddq_f32(sf4_high, sf6_high);
                     float32x4_t b_2_low = vsubq_f32(sf4_low, sf6_low);
@@ -4427,7 +5585,7 @@ protected:
                     float32x4_t b_1_high = vmulq_f32(sf5_high, c2);
                     float32x4_t b_3_low = vmulq_f32(sf7_low, c2);
                     float32x4_t b_3_high = vmulq_f32(sf7_high, c2);
-
+                    
                     vst1q_f32(&x[lut[4]].f[0], vmulq_f32(vaddq_f32(b_0_low, b_1_low), mul));
                     vst1q_f32(&x[lut[4]].f[4], vmulq_f32(vaddq_f32(b_0_high, b_1_high), mul));
                     vst1q_f32(&x[lut[5]].f[0], vmulq_f32(vsubq_f32(b_0_low, b_1_low), mul));
@@ -4474,7 +5632,7 @@ protected:
             vst1q_f32(&x[0].f[4], vmulq_f32(vld1q_f32(&f[0].f[4]), mul));
         }
     }
- 
+    
     void do_ifft_neon_d8(const simd_double8 *_Nonnull f, simd_double8 *_Nonnull x, bool do_scale = false)
     {
         // Initialize constants
@@ -4485,12 +5643,12 @@ protected:
         if (unlikely(do_scale)) {
             mul = vdivq_f64(mul, vdupq_n_f64((double)_N));
         }
-
+        
         if (likely(_nbr_bits > 2)) {
             simd_double8 *sf = (simd_double8*)f;
             simd_double8 *df;
             simd_double8 *df_temp;
-
+            
             if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 df_temp = x;
@@ -4498,25 +5656,25 @@ protected:
                 df = x;
                 df_temp = buffer_ptr;
             }
-
+            
             // First pass optimization with prefetching
             for (auto pass = _nbr_bits - 1; pass >= 3; --pass) {
                 auto nbr_coef = 1 << pass;
                 auto h_nbr_coef = nbr_coef >> 1;
                 auto d_nbr_coef = nbr_coef << 1;
-
+                
                 for (auto i = 0; i < _N; i += d_nbr_coef) {
                     auto sfr = &sf[i];
                     auto sfi = &sfr[nbr_coef];
                     auto df1r = &df[i];
                     auto df2r = &df1r[nbr_coef];
-
+                    
                     // Prefetch next block
                     if (likely(i + d_nbr_coef < _N)) {
                         __builtin_prefetch(&sf[i + d_nbr_coef], 0, 3);
                         __builtin_prefetch(&sf[i + d_nbr_coef + nbr_coef], 0, 3);
                     }
-
+                    
                     // Optimized extreme coefficient processing
                     float64x2_t sfr_0_low = vld1q_f64(&sfr[0].f[0]);
                     float64x2_t sfr_0_high = vld1q_f64(&sfr[0].f[2]);
@@ -4539,7 +5697,7 @@ protected:
                     vst1q_f64(&df1r[h_nbr_coef].f[2], vmulq_f64(sfr_h_nbr_coef_high, c2));
                     vst1q_f64(&df2r[h_nbr_coef].f[0], vmulq_f64(sfi_h_nbr_coef_low, c2));
                     vst1q_f64(&df2r[h_nbr_coef].f[2], vmulq_f64(sfi_h_nbr_coef_high, c2));
-
+                    
                     // Process conjugate complex numbers
                     auto df1i = &df1r[h_nbr_coef];
                     auto df2i = &df1i[nbr_coef];
@@ -4547,9 +5705,9 @@ protected:
                     // Twiddle factor preloading
                     double c_next, s_next;
                     if (h_nbr_coef > 1) {
-                        _twiddle_cache.get_twiddle(pass, 1, c_next, s_next);
+                        _twiddle_cache->get_twiddle(pass, 1, c_next, s_next);
                     }
-
+                    
                     for (int j = 1; j < h_nbr_coef; ++j) {
                         // Use preloaded twiddle factors
                         double c = c_next;
@@ -4561,13 +5719,13 @@ protected:
                             __builtin_prefetch(&sfi[-(j + 1)], 0, 3);
                             __builtin_prefetch(&sfi[j + 1], 0, 3);
                             __builtin_prefetch(&sfi[nbr_coef - (j + 1)], 0, 3);
-                            _twiddle_cache.get_twiddle(pass, j + 1, c_next, s_next);
+                            _twiddle_cache->get_twiddle(pass, j + 1, c_next, s_next);
                         }
-
+                        
                         // Create vectorized twiddle factors for doubles
                         float64x1_t cos_val = vdup_n_f64(c);
                         float64x1_t sin_val = vdup_n_f64(s);
-
+                        
                         // Load values with efficient memory access
                         float64x2_t sfr_j_low = vld1q_f64(&sfr[j].f[0]);
                         float64x2_t sfr_j_high = vld1q_f64(&sfr[j].f[2]);
@@ -4577,19 +5735,19 @@ protected:
                         float64x2_t sfi_j_high = vld1q_f64(&sfi[j].f[2]);
                         float64x2_t sfi_nbr_j_low = vld1q_f64(&sfi[nbr_coef - j].f[0]);
                         float64x2_t sfi_nbr_j_high = vld1q_f64(&sfi[nbr_coef - j].f[2]);
-
+                        
                         // Compute df1r and df1i values
                         vst1q_f64(&df1r[j].f[0], vaddq_f64(sfr_j_low, sfi_neg_j_low));
                         vst1q_f64(&df1r[j].f[2], vaddq_f64(sfr_j_high, sfi_neg_j_high));
                         vst1q_f64(&df1i[j].f[0], vsubq_f64(sfi_j_low, sfi_nbr_j_low));
                         vst1q_f64(&df1i[j].f[2], vsubq_f64(sfi_j_high, sfi_nbr_j_high));
-
+                        
                         // Calculate vr and vi
                         float64x2_t vr_low = vsubq_f64(sfr_j_low, sfi_neg_j_low);
                         float64x2_t vr_high = vsubq_f64(sfr_j_high, sfi_neg_j_high);
                         float64x2_t vi_low = vaddq_f64(sfi_j_low, sfi_nbr_j_low);
                         float64x2_t vi_high = vaddq_f64(sfi_j_high, sfi_nbr_j_high);
-
+                        
                         // Compute with optimized FMA operations for doubles
                         float64x2_t df2r_j_low = vfmaq_lane_f64(vmulq_lane_f64(vr_low, cos_val, 0),
                                                                 vi_low, sin_val, 0);
@@ -4608,7 +5766,7 @@ protected:
                         vst1q_f64(&df2i[j].f[2], df2i_j_high);
                     }
                 }
-
+                
                 // Prepare for next pass
                 if (pass < _nbr_bits - 1) {
                     auto tmp = df;
@@ -4619,7 +5777,7 @@ protected:
                     df = df_temp;
                 }
             }
-
+            
             // Antepenultimate pass with optimized SQ2_2 calculations
             const float64x1_t sq2_2 = vdup_n_f64(SQ2_2);
             
@@ -4631,7 +5789,7 @@ protected:
                 if (likely(i + 8 < _N)) {
                     __builtin_prefetch(&sf[i + 8], 0, 3);
                 }
-
+                
                 // Load data with interleaved memory access
                 float64x2_t f0_low = vld1q_f64(&sf2[0].f[0]);
                 float64x2_t f0_high = vld1q_f64(&sf2[0].f[2]);
@@ -4689,9 +5847,9 @@ protected:
                 vst1q_f64(&df2[7].f[0], vmulq_lane_f64(vsubq_f64(vi_low, vr_low), sq2_2, 0));
                 vst1q_f64(&df2[7].f[2], vmulq_lane_f64(vsubq_f64(vi_high, vr_high), sq2_2, 0));
             }
-
+            
             // Penultimate and last pass with optimized bit reversal
-            auto lut_ptr = _bit_rev_lut.get_ptr();
+            auto lut_ptr = _bit_rev_lut->get_ptr();
             
             for (auto i = 0; i < _N; i += 8) {
                 auto lut = lut_ptr + i;
@@ -4702,7 +5860,7 @@ protected:
                     __builtin_prefetch(&x[lut[8]], 1, 0);
                     __builtin_prefetch(&x[lut[9]], 1, 0);
                 }
-
+                
                 // Process first 4 outputs with optimized butterfly
                 {
                     float64x2_t sf0_low = vld1q_f64(&sf2[0].f[0]);
@@ -4713,7 +5871,7 @@ protected:
                     float64x2_t sf2val_high = vld1q_f64(&sf2[2].f[2]);
                     float64x2_t sf3_low = vld1q_f64(&sf2[3].f[0]);
                     float64x2_t sf3_high = vld1q_f64(&sf2[3].f[2]);
-
+                    
                     // Calculate butterfly values with SIMD
                     float64x2_t b_0_low = vaddq_f64(sf0_low, sf2val_low);
                     float64x2_t b_0_high = vaddq_f64(sf0_high, sf2val_high);
@@ -4723,7 +5881,7 @@ protected:
                     float64x2_t b_1_high = vmulq_f64(sf1_high, c2);
                     float64x2_t b_3_low = vmulq_f64(sf3_low, c2);
                     float64x2_t b_3_high = vmulq_f64(sf3_high, c2);
-
+                    
                     // Apply scaling and store with bit-reversal
                     vst1q_f64(&x[lut[0]].f[0], vmulq_f64(vaddq_f64(b_0_low, b_1_low), mul));
                     vst1q_f64(&x[lut[0]].f[2], vmulq_f64(vaddq_f64(b_0_high, b_1_high), mul));
@@ -4734,7 +5892,7 @@ protected:
                     vst1q_f64(&x[lut[3]].f[0], vmulq_f64(vsubq_f64(b_2_low, b_3_low), mul));
                     vst1q_f64(&x[lut[3]].f[2], vmulq_f64(vsubq_f64(b_2_high, b_3_high), mul));
                 }
-
+                
                 // Process second 4 outputs with similar optimization
                 {
                     float64x2_t sf4_low = vld1q_f64(&sf2[4].f[0]);
@@ -4745,7 +5903,7 @@ protected:
                     float64x2_t sf6_high = vld1q_f64(&sf2[6].f[2]);
                     float64x2_t sf7_low = vld1q_f64(&sf2[7].f[0]);
                     float64x2_t sf7_high = vld1q_f64(&sf2[7].f[2]);
-
+                    
                     float64x2_t b_0_low = vaddq_f64(sf4_low, sf6_low);
                     float64x2_t b_0_high = vaddq_f64(sf4_high, sf6_high);
                     float64x2_t b_2_low = vsubq_f64(sf4_low, sf6_low);
@@ -4754,7 +5912,7 @@ protected:
                     float64x2_t b_1_high = vmulq_f64(sf5_high, c2);
                     float64x2_t b_3_low = vmulq_f64(sf7_low, c2);
                     float64x2_t b_3_high = vmulq_f64(sf7_high, c2);
-
+                    
                     vst1q_f64(&x[lut[4]].f[0], vmulq_f64(vaddq_f64(b_0_low, b_1_low), mul));
                     vst1q_f64(&x[lut[4]].f[2], vmulq_f64(vaddq_f64(b_0_high, b_1_high), mul));
                     vst1q_f64(&x[lut[5]].f[0], vmulq_f64(vsubq_f64(b_0_low, b_1_low), mul));
@@ -4817,7 +5975,7 @@ protected:
             }
             
             // First stage: bit-reversal and initial butterfly computation
-            auto bit_rev_lut_ptr = _bit_rev_lut.get_ptr();
+            auto bit_rev_lut_ptr = _bit_rev_lut->get_ptr();
             
             for (int i = 0; i < _N; i += 4) {
                 auto df2 = &df[i];
@@ -4830,7 +5988,7 @@ protected:
                 // Calculate the sums and differences
                 float64x2x4_t sum_0 = vaddq_f64_4(x0, x1); // x0 + x1
                 float64x2x4_t sum_2 = vaddq_f64_4(x2, x3); // x2 + x3
-    
+                
                 float64x2x4_t diff_0 = vsubq_f64_4(x0, x1); // x0 - x1
                 float64x2x4_t diff_2 = vsubq_f64_4(x2, x3); // x2 - x3
                 
@@ -4848,9 +6006,9 @@ protected:
                 auto df2 = &df[i];
                 
                 float64x2x4_t   f0 = vld4q_f64((double*)&df2[0]), f1 = vld4q_f64((double*)&df2[1]),
-                                f2 = vld4q_f64((double*)&df2[2]), f3 = vld4q_f64((double*)&df2[3]),
-                                f4 = vld4q_f64((double*)&df2[4]), f5 = vld4q_f64((double*)&df2[5]),
-                                f6 = vld4q_f64((double*)&df2[6]), f7 = vld4q_f64((double*)&df2[7]);
+                f2 = vld4q_f64((double*)&df2[2]), f3 = vld4q_f64((double*)&df2[3]),
+                f4 = vld4q_f64((double*)&df2[4]), f5 = vld4q_f64((double*)&df2[5]),
+                f6 = vld4q_f64((double*)&df2[6]), f7 = vld4q_f64((double*)&df2[7]);
                 
                 vst4q_f64((double*)&sf2[0], vaddq_f64_4(f0, f4));
                 vst4q_f64((double*)&sf2[4], vsubq_f64_4(f0, f4));
@@ -4911,7 +6069,7 @@ protected:
                         
                         // v = sf2r[j] * c - sf2i[j] * s
                         float64x2x4_t v_0 = vmlaq_f64_4(vnegq_f64_4(vmulq_f64_4(sf2i0_j, s)), sf2r0_j, c);
-                       
+                        
                         float64x2x4_t sf1r0_j = vld4q_f64((double*) &sf1r[j]);
                         
                         vst4q_f64((double*) &dfr[ j], vaddq_f64_4(sf1r0_j, v_0));
@@ -4970,7 +6128,7 @@ protected:
             }
             
             // First stage: bit-reversal and initial butterfly computation
-            auto bit_rev_lut_ptr = _bit_rev_lut.get_ptr();
+            auto bit_rev_lut_ptr = _bit_rev_lut->get_ptr();
             
             for (int i = 0; i < _N; i += 4) {
                 auto df2 = &df[i];
@@ -4983,7 +6141,7 @@ protected:
                 // Calculate the sums and differences
                 float32x4x2_t sum_0 = vaddq_f32_4(x0, x1); // x0 + x1
                 float32x4x2_t sum_2 = vaddq_f32_4(x2, x3); // x2 + x3
-    
+                
                 float32x4x2_t diff_0 = vsubq_f32_4(x0, x1); // x0 - x1
                 float32x4x2_t diff_2 = vsubq_f32_4(x2, x3); // x2 - x3
                 
@@ -5001,9 +6159,9 @@ protected:
                 auto df2 = &df[i];
                 
                 float32x4x2_t   f0 = vld2q_f32((float*)&df2[0]), f1 = vld2q_f32((float*)&df2[1]),
-                                f2 = vld2q_f32((float*)&df2[2]), f3 = vld2q_f32((float*)&df2[3]),
-                                f4 = vld2q_f32((float*)&df2[4]), f5 = vld2q_f32((float*)&df2[5]),
-                                f6 = vld2q_f32((float*)&df2[6]), f7 = vld2q_f32((float*)&df2[7]);
+                f2 = vld2q_f32((float*)&df2[2]), f3 = vld2q_f32((float*)&df2[3]),
+                f4 = vld2q_f32((float*)&df2[4]), f5 = vld2q_f32((float*)&df2[5]),
+                f6 = vld2q_f32((float*)&df2[6]), f7 = vld2q_f32((float*)&df2[7]);
                 
                 vst2q_f32((float*)&sf2[0], vaddq_f32_4(f0, f4));
                 vst2q_f32((float*)&sf2[4], vsubq_f32_4(f0, f4));
@@ -5064,7 +6222,7 @@ protected:
                         
                         // v = sf2r[j] * c - sf2i[j] * s
                         float32x4x2_t v_0 = vmlaq_f32_4(vnegq_f32_4(vmulq_f32_4(sf2i0_j, s)), sf2r0_j, c);
-                       
+                        
                         float32x4x2_t sf1r0_j = vld2q_f32((float*) &sf1r[j]);
                         
                         vst2q_f32((float*) &dfr[ j], vaddq_f32_4(sf1r0_j, v_0));
@@ -5108,7 +6266,7 @@ protected:
         }
     }
     
-
+    
     void do_ifft_neon_d8(const simd_double8 *f, simd_double8 *x)
     {
         const double c2 = 2.0;
@@ -5223,29 +6381,29 @@ protected:
             
             // Penultimate and last pass at once
             
-            const int * lut = _bit_rev_lut.get_ptr();
+            const int * lut = _bit_rev_lut->get_ptr();
             const simd_double8 * sf2 = df;
             
             for (auto i = 0; i < _N; i += 8)
             {
                 float64x2x4_t   sf2_0 = vld4q_f64((double*) &sf2 [0]),
-                                sf2_1 = vld4q_f64((double*) &sf2 [1]),
-                                sf2_2 = vld4q_f64((double*) &sf2 [2]),
-                                sf2_3 = vld4q_f64((double*) &sf2 [3]),
-                                sf2_4 = vld4q_f64((double*) &sf2 [4]),
-                                sf2_5 = vld4q_f64((double*) &sf2 [5]),
-                                sf2_6 = vld4q_f64((double*) &sf2 [6]),
-                                sf2_7 = vld4q_f64((double*) &sf2 [7]);
+                sf2_1 = vld4q_f64((double*) &sf2 [1]),
+                sf2_2 = vld4q_f64((double*) &sf2 [2]),
+                sf2_3 = vld4q_f64((double*) &sf2 [3]),
+                sf2_4 = vld4q_f64((double*) &sf2 [4]),
+                sf2_5 = vld4q_f64((double*) &sf2 [5]),
+                sf2_6 = vld4q_f64((double*) &sf2 [6]),
+                sf2_7 = vld4q_f64((double*) &sf2 [7]);
                 
                 
                 float64x2x4_t   b_0 = vaddq_f64_4(sf2_0, sf2_2),
-                                b_2 = vsubq_f64_4(sf2_0, sf2_2),
-                                b_1 = vmulq_f64_4(sf2_1, c2),
-                                b_3 = vmulq_f64_4(sf2_3, c2),
-                                b_4 = vaddq_f64_4(sf2_4, sf2_6),
-                                b_7 = vsubq_f64_4(sf2_4, sf2_6),
-                                b_5 = vmulq_f64_4(sf2_5, c2),
-                                b_6 = vmulq_f64_4(sf2_7, c2);
+                b_2 = vsubq_f64_4(sf2_0, sf2_2),
+                b_1 = vmulq_f64_4(sf2_1, c2),
+                b_3 = vmulq_f64_4(sf2_3, c2),
+                b_4 = vaddq_f64_4(sf2_4, sf2_6),
+                b_7 = vsubq_f64_4(sf2_4, sf2_6),
+                b_5 = vmulq_f64_4(sf2_5, c2),
+                b_6 = vmulq_f64_4(sf2_7, c2);
                 
                 vst4q_f64((double*) &x[lut[0]], vaddq_f64_4(b_0, b_1));
                 vst4q_f64((double*) &x[lut[1]], vsubq_f64_4(b_0, b_1));
@@ -5400,7 +6558,7 @@ protected:
             
             // Penultimate and last pass at once
             
-            auto lut_ptr = _bit_rev_lut.get_ptr();
+            auto lut_ptr = _bit_rev_lut->get_ptr();
             
             
             for (auto i = 0; i < _N; i += 8)
@@ -5408,23 +6566,23 @@ protected:
                 auto df2 = &df [i];
                 auto lut = &lut_ptr [i];
                 float32x4x2_t   sf2_0 = vld2q_f32((float*) &df2 [0]),
-                                sf2_1 = vld2q_f32((float*) &df2 [1]),
-                                sf2_2 = vld2q_f32((float*) &df2 [2]),
-                                sf2_3 = vld2q_f32((float*) &df2 [3]),
-                                sf2_4 = vld2q_f32((float*) &df2 [4]),
-                                sf2_5 = vld2q_f32((float*) &df2 [5]),
-                                sf2_6 = vld2q_f32((float*) &df2 [6]),
-                                sf2_7 = vld2q_f32((float*) &df2 [7]);
+                sf2_1 = vld2q_f32((float*) &df2 [1]),
+                sf2_2 = vld2q_f32((float*) &df2 [2]),
+                sf2_3 = vld2q_f32((float*) &df2 [3]),
+                sf2_4 = vld2q_f32((float*) &df2 [4]),
+                sf2_5 = vld2q_f32((float*) &df2 [5]),
+                sf2_6 = vld2q_f32((float*) &df2 [6]),
+                sf2_7 = vld2q_f32((float*) &df2 [7]);
                 
                 float32x4x2_t   b_0 = vaddq_f32_4(sf2_0, sf2_2),
-                                b_2 = vsubq_f32_4(sf2_0, sf2_2),
-                                b_1 = vmulq_f32_4(sf2_1, c2),
-                                b_3 = vmulq_f32_4(sf2_3, c2),
+                b_2 = vsubq_f32_4(sf2_0, sf2_2),
+                b_1 = vmulq_f32_4(sf2_1, c2),
+                b_3 = vmulq_f32_4(sf2_3, c2),
                 
-                                b_4 = vaddq_f32_4(sf2_4, sf2_6),
-                                b_7 = vsubq_f32_4(sf2_4, sf2_6),
-                                b_5 = vmulq_f32_4(sf2_5, c2),
-                                b_6 = vmulq_f32_4(sf2_7, c2);
+                b_4 = vaddq_f32_4(sf2_4, sf2_6),
+                b_7 = vsubq_f32_4(sf2_4, sf2_6),
+                b_5 = vmulq_f32_4(sf2_5, c2),
+                b_6 = vmulq_f32_4(sf2_7, c2);
                 
                 vst2q_f32((float*) &x[lut[0]], vaddq_f32_4(b_0, b_1));
                 vst2q_f32((float*) &x[lut[1]], vsubq_f32_4(b_0, b_1));
@@ -5462,121 +6620,705 @@ protected:
     }
 #endif
     
-#endif // USE_NEON
+#endif // FFT_USE_NEON
 };
 
+namespace fft_neon_helpers {
 
-template<typename T, int N>
-class FFTRealHybrid {
-public:
-    // --- Type aliases ---
-    using T1 = SimdBase<T>;        // scalar base type
-    using cmplxTT = cmplxT<T>;     // complex type matching T
+inline void do_fft_neon_f1_impl(
+    const float* x,
+    float* f,
+    int N,
+    int nbr_bits,
+    const int* bit_rev_lut,
+    float* buffer_ptr,
+    void* twiddle_cache_ptr)
+{
+    using T1 = float;
+    T1 c, s;
     
-    // Select the largest backend SIMD type for performance
-    static constexpr auto select_backend() {
-        if constexpr (std::is_same_v<T,float>) {
-            // Scalar float → 8-lane SIMD for max performance
-            return simd_float8{};
-        } else if constexpr (std::is_same_v<T,simd_float2> ||
-                             std::is_same_v<T,simd_float4> ||
-                             std::is_same_v<T,simd_float8>) {
-            // Smaller float vectors → upcast to 8-lane SIMD
-            return simd_float8{};
-        } else if constexpr (std::is_same_v<T,double>) {
-            // Scalar double → 4-lane SIMD (double is 2x float size)
-            return simd_double4{};
-        } else if constexpr (std::is_same_v<T,simd_double2> ||
-                             std::is_same_v<T,simd_double4>) {
-            // Smaller double vectors → upcast to 4-lane SIMD
-            return simd_double4{};
-        } else if constexpr (std::is_same_v<T,simd_double8>) {
-            // Already maxed out for double
-            return simd_double8{};
+    // Cast back to proper type - now we can access it!
+    auto twiddle_cache = static_cast<FFTReal<float>::twiddle_cache*>(twiddle_cache_ptr);
+    
+    if (nbr_bits > 2) {
+        float *sf, *df;
+        if (nbr_bits & 1) {
+            df = buffer_ptr;
+            sf = f;
         } else {
-            static_assert(sizeof(T)==0, "Unsupported type for FFTRealHybrid backend");
+            df = f;
+            sf = buffer_ptr;
         }
-    }
-
-    using BT = decltype(select_backend());   // backend type
-    using cmplxBT = cmplxT<BT>;             // complex type of backend
-
-    static constexpr int simd_size = SimdSize<BT>; // number of lanes in backend vector
-    static constexpr int simd_N = N / simd_size; // number of backend vectors to hold N elements
-    
-    // --- Constructor ---
-    FFTRealHybrid() {
-        X.resize(simd_N);
-        Y.resize(simd_N);
-    }
-
-    // --- Public API ---
-    void real_fft(const T* in, cmplxTT* out, bool do_scale = false) {
-        pack_input(in);
-        backend.real_fft(X.data(), Y.data(), do_scale);
-        unpack_output(out);
-    }
-
-    void real_ifft(const cmplxTT* in, T* out, bool do_scale = false) {
-        pack_spectrum(in);
-        backend.inverse(Y.data(), X.data(), do_scale);
-        unpack_output(out);
-    }
-
-    void reset() { backend.reset(); }
-
-private:
-    std::vector<BT> X, Y;  // input/output buffers
-    FFTReal<BT> backend;   // backend FFT
-
-    // --- Packing / Unpacking ---
-    void pack_input(const T* in) {
-        for(int i=0; i<simd_N; ++i) {
-            BT v{};
-            for(int j=0; j<simd_size; ++j) {
-                int idx = i*simd_size + j;
-                if(idx < N) v_insert(v, j, in[idx]);
+        
+        auto lut = bit_rev_lut;
+        
+        // ================================================================
+        // First and second pass - WITH simd_float8
+        // ================================================================
+        int i;
+        for (i = 0; i + 32 <= N; i += 32) {
+            simd_float8 x0, x1, x2, x3;
+            
+            for (int j = 0; j < 8; j++) {
+                int idx = i + j * 4;
+                x0[j] = x[lut[idx]];
+                x1[j] = x[lut[idx + 1]];
+                x2[j] = x[lut[idx + 2]];
+                x3[j] = x[lut[idx + 3]];
             }
-            X[i] = v;
+            
+            simd_float8 t0 = x0 + x2;
+            simd_float8 t1 = x1 + x3;
+            simd_float8 t2 = x0 - x2;
+            simd_float8 t3 = x1 - x3;
+            
+            simd_float8 out0 = t0 + t1;
+            simd_float8 out2 = t0 - t1;
+            simd_float8 out1 = t2;
+            simd_float8 out3 = t3;
+            
+            for (int j = 0; j < 8; j++) {
+                int idx = i + j * 4;
+                df[idx]     = out0[j];
+                df[idx + 1] = out1[j];
+                df[idx + 2] = out2[j];
+                df[idx + 3] = out3[j];
+            }
         }
-    }
-
-    void unpack_output(cmplxTT* out){
-        for(int i=0;i<simd_N;i++){
-            BT v = Y[i];
-            for(int j=0;j<simd_size;j++){
-                int idx = i*simd_size + j;
-                if(idx < N) {
-                    out[idx].re = v_extract(v,j);
-                    out[idx].im = T1(0);
+        
+        for (; i < N; i += 4) {
+            auto df2 = &df[i];
+            auto x0_s = x[lut[i]];
+            auto x1_s = x[lut[i + 1]];
+            auto x2_s = x[lut[i + 2]];
+            auto x3_s = x[lut[i + 3]];
+            
+            df2[0] = x0_s + x1_s + x2_s + x3_s;
+            df2[1] = x0_s - x1_s;
+            df2[2] = x0_s + x1_s - x2_s - x3_s;
+            df2[3] = x2_s - x3_s;
+        }
+        
+        // ================================================================
+        // Third pass
+        // ================================================================
+        const float SQ2_2_f = SQ2_2;
+        
+        for (i = 0; i < N; i += 8) {
+            auto sf2 = &sf[i];
+            auto df2 = &df[i];
+            
+            sf2[0] = df2[0] + df2[4];
+            sf2[4] = df2[0] - df2[4];
+            sf2[2] = df2[2];
+            sf2[6] = df2[6];
+            
+            float v = (df2[5] - df2[7]) * SQ2_2_f;
+            sf2[1] = df2[1] + v;
+            sf2[3] = df2[1] - v;
+            
+            v = (df2[5] + df2[7]) * SQ2_2_f;
+            sf2[5] = v + df2[3];
+            sf2[7] = v - df2[3];
+        }
+        
+        // ================================================================
+        // Remaining passes with twiddle factors
+        // ================================================================
+        for (auto pass = 3; pass < nbr_bits; ++pass) {
+            auto nbr_coef = 1 << pass;
+            auto h_nbr_coef = nbr_coef >> 1;
+            auto d_nbr_coef = nbr_coef << 1;
+            
+            for (auto idx = 0; idx < N; idx += d_nbr_coef) {
+                auto sf1r = sf + idx;
+                auto sf2r = sf1r + nbr_coef;
+                auto dfr = df + idx;
+                auto dfi = dfr + nbr_coef;
+                
+                dfr[0] = sf1r[0] + sf2r[0];
+                dfi[0] = sf1r[0] - sf2r[0];
+                dfr[h_nbr_coef] = sf1r[h_nbr_coef];
+                dfi[h_nbr_coef] = sf2r[h_nbr_coef];
+                
+                auto sf1i = &sf1r[h_nbr_coef];
+                auto sf2i = &sf1i[nbr_coef];
+                
+                for (int j = 1; j < h_nbr_coef; ++j) {
+                    twiddle_cache->get_twiddle(pass, j, c, s);
+                    
+                    float v = sf2r[j] * c - sf2i[j] * s;
+                    dfr[j] = sf1r[j] + v;
+                    dfi[-j] = sf1r[j] - v;
+                    
+                    v = sf2r[j] * s + sf2i[j] * c;
+                    dfi[j] = v + sf1i[j];
+                    dfi[nbr_coef - j] = v - sf1i[j];
                 }
             }
+            
+            auto tmp = df;
+            df = sf;
+            sf = tmp;
         }
+        
+    } else if (nbr_bits == 2) {
+        f[1] = x[0] - x[2];
+        f[3] = x[1] - x[3];
+        const float b_0 = x[0] + x[2];
+        const float b_2 = x[1] + x[3];
+        f[0] = b_0 + b_2;
+        f[2] = b_0 - b_2;
+    } else if (nbr_bits == 1) {
+        f[0] = x[0] + x[1];
+        f[1] = x[0] - x[1];
+    } else {
+        f[0] = x[0];
     }
+}
 
-    void pack_spectrum(const cmplxTT* in){
-        for(int i=0;i<simd_N;i++){
-            BT v{};
-            for(int j=0;j<simd_size;j++){
-                int idx = i*simd_size + j;
-                if(idx < N) v_insert(v,j,in[idx].re);
+inline void do_fft_neon_d1_impl(
+    const double* x,
+    double* f,
+    int N,
+    int nbr_bits,
+    const int* bit_rev_lut,
+    double* buffer_ptr,
+    void* twiddle_cache_ptr)
+{
+    using T1 = double;
+    T1 c, s;
+    
+    auto twiddle_cache = static_cast<FFTReal<double>::twiddle_cache*>(twiddle_cache_ptr);
+    
+    if (nbr_bits > 2) {
+        double *sf, *df;
+        if (nbr_bits & 1) {
+            df = buffer_ptr;
+            sf = f;
+        } else {
+            df = f;
+            sf = buffer_ptr;
+        }
+        
+        auto lut = bit_rev_lut;
+        
+        // ================================================================
+        // First and second pass - WITH simd_double4
+        // ================================================================
+        int i;
+        for (i = 0; i + 16 <= N; i += 16) {
+            // Process 4 radix-4 butterflies using simd_double4
+            simd_double4 x0, x1, x2, x3;
+            
+            for (int j = 0; j < 4; j++) {
+                int idx = i + j * 4;
+                x0[j] = x[lut[idx]];
+                x1[j] = x[lut[idx + 1]];
+                x2[j] = x[lut[idx + 2]];
+                x3[j] = x[lut[idx + 3]];
             }
-            Y[i] = v;
+            
+            simd_double4 t0 = x0 + x2;
+            simd_double4 t1 = x1 + x3;
+            simd_double4 t2 = x0 - x2;
+            simd_double4 t3 = x1 - x3;
+            
+            simd_double4 out0 = t0 + t1;
+            simd_double4 out2 = t0 - t1;
+            simd_double4 out1 = t2;
+            simd_double4 out3 = t3;
+            
+            for (int j = 0; j < 4; j++) {
+                int idx = i + j * 4;
+                df[idx]     = out0[j];
+                df[idx + 1] = out1[j];
+                df[idx + 2] = out2[j];
+                df[idx + 3] = out3[j];
+            }
+        }
+        
+        // Remainder scalar
+        for (; i < N; i += 4) {
+            auto df2 = &df[i];
+            auto x0_s = x[lut[i]];
+            auto x1_s = x[lut[i + 1]];
+            auto x2_s = x[lut[i + 2]];
+            auto x3_s = x[lut[i + 3]];
+            
+            df2[0] = x0_s + x1_s + x2_s + x3_s;
+            df2[1] = x0_s - x1_s;
+            df2[2] = x0_s + x1_s - x2_s - x3_s;
+            df2[3] = x2_s - x3_s;
+        }
+        
+        // ================================================================
+        // Third pass - radix-8
+        // ================================================================
+        const double SQ2_2_d = SQ2_2;
+        
+        for (i = 0; i < N; i += 8) {
+            auto sf2 = &sf[i];
+            auto df2 = &df[i];
+            
+            sf2[0] = df2[0] + df2[4];
+            sf2[4] = df2[0] - df2[4];
+            sf2[2] = df2[2];
+            sf2[6] = df2[6];
+            
+            double v = (df2[5] - df2[7]) * SQ2_2_d;
+            sf2[1] = df2[1] + v;
+            sf2[3] = df2[1] - v;
+            
+            v = (df2[5] + df2[7]) * SQ2_2_d;
+            sf2[5] = v + df2[3];
+            sf2[7] = v - df2[3];
+        }
+        
+        // ================================================================
+        // Remaining passes with twiddle factors
+        // ================================================================
+        for (auto pass = 3; pass < nbr_bits; ++pass) {
+            auto nbr_coef = 1 << pass;
+            auto h_nbr_coef = nbr_coef >> 1;
+            auto d_nbr_coef = nbr_coef << 1;
+            
+            for (auto idx = 0; idx < N; idx += d_nbr_coef) {
+                auto sf1r = sf + idx;
+                auto sf2r = sf1r + nbr_coef;
+                auto dfr = df + idx;
+                auto dfi = dfr + nbr_coef;
+                
+                dfr[0] = sf1r[0] + sf2r[0];
+                dfi[0] = sf1r[0] - sf2r[0];
+                dfr[h_nbr_coef] = sf1r[h_nbr_coef];
+                dfi[h_nbr_coef] = sf2r[h_nbr_coef];
+                
+                auto sf1i = &sf1r[h_nbr_coef];
+                auto sf2i = &sf1i[nbr_coef];
+                
+                for (int j = 1; j < h_nbr_coef; ++j) {
+                    twiddle_cache->get_twiddle(pass, j, c, s);
+                    
+                    double v = sf2r[j] * c - sf2i[j] * s;
+                    dfr[j] = sf1r[j] + v;
+                    dfi[-j] = sf1r[j] - v;
+                    
+                    v = sf2r[j] * s + sf2i[j] * c;
+                    dfi[j] = v + sf1i[j];
+                    dfi[nbr_coef - j] = v - sf1i[j];
+                }
+            }
+            
+            auto tmp = df;
+            df = sf;
+            sf = tmp;
+        }
+        
+    } else if (nbr_bits == 2) {
+        // 4-point FFT
+        f[1] = x[0] - x[2];
+        f[3] = x[1] - x[3];
+        const double b_0 = x[0] + x[2];
+        const double b_2 = x[1] + x[3];
+        f[0] = b_0 + b_2;
+        f[2] = b_0 - b_2;
+    } else if (nbr_bits == 1) {
+        // 2-point FFT
+        f[0] = x[0] + x[1];
+        f[1] = x[0] - x[1];
+    } else {
+        // 1-point FFT
+        f[0] = x[0];
+    }
+}
+
+// ============================================================================
+// IFFT for float using simd_float8
+// ============================================================================
+
+inline void do_ifft_neon_f1_impl(
+    const float* _Nonnull f,
+    float* _Nonnull x,
+    int N,
+    int nbr_bits,
+    const int* _Nonnull bit_rev_lut,
+    float* _Nonnull buffer_ptr,
+    void* _Nonnull twiddle_cache_ptr,
+    bool do_scale)
+{
+    using T1 = float;
+    T1 c, s;
+    const float c2 = 2.0f;
+    float mul = 1.0f;
+    if (do_scale) mul = 1.0f / static_cast<float>(N);
+    
+    auto twiddle_cache = static_cast<FFTReal<float>::twiddle_cache*>(twiddle_cache_ptr);
+    
+    if (nbr_bits > 2) {
+        float* sf = const_cast<float*>(f);
+        float* df;
+        float* df_temp;
+        
+        if (nbr_bits & 1) {
+            df = buffer_ptr;
+            df_temp = x;
+        } else {
+            df = x;
+            df_temp = buffer_ptr;
+        }
+        
+        // ================================================================
+        // Inverse passes with vectorization
+        // ================================================================
+        for (auto pass = nbr_bits - 1; pass >= 3; --pass) {
+            auto nbr_coef = 1 << pass;
+            auto h_nbr_coef = nbr_coef >> 1;
+            auto d_nbr_coef = nbr_coef << 1;
+            
+            for (auto i = 0; i < N; i += d_nbr_coef) {
+                auto sfr = &sf[i];
+                auto sfi = &sfr[nbr_coef];
+                auto df1r = &df[i];
+                auto df2r = &df1r[nbr_coef];
+                
+                df1r[0] = sfr[0] + sfr[nbr_coef];
+                df2r[0] = sfr[0] - sfr[nbr_coef];
+                df1r[h_nbr_coef] = sfr[h_nbr_coef] * c2;
+                df2r[h_nbr_coef] = sfi[h_nbr_coef] * c2;
+                
+                auto df1i = &df1r[h_nbr_coef];
+                auto df2i = &df1i[nbr_coef];
+                
+                // Vectorized loop - process 8 at a time
+                int j;
+                for (j = 1; j + 8 <= h_nbr_coef; j += 8) {
+                    // Manual unrolling for 8 iterations
+                    for (int k = 0; k < 8; k++) {
+                        int idx = j + k;
+                        df1r[idx] = sfr[idx] + sfi[-idx];
+                        df1i[idx] = sfi[idx] - sfi[nbr_coef - idx];
+                        
+                        twiddle_cache->get_twiddle(pass, idx, c, s);
+                        
+                        auto vr = sfr[idx] - sfi[-idx];
+                        auto vi = sfi[idx] + sfi[nbr_coef - idx];
+                        
+                        df2r[idx] = vr * c + vi * s;
+                        df2i[idx] = vi * c - vr * s;
+                    }
+                }
+                
+                // Scalar remainder
+                for (; j < h_nbr_coef; ++j) {
+                    df1r[j] = sfr[j] + sfi[-j];
+                    df1i[j] = sfi[j] - sfi[nbr_coef - j];
+                    
+                    twiddle_cache->get_twiddle(pass, j, c, s);
+                    
+                    auto vr = sfr[j] - sfi[-j];
+                    auto vi = sfi[j] + sfi[nbr_coef - j];
+                    
+                    df2r[j] = vr * c + vi * s;
+                    df2i[j] = vi * c - vr * s;
+                }
+            }
+            
+            if (pass < nbr_bits - 1) {
+                auto tmp = df;
+                df = sf;
+                sf = tmp;
+            } else {
+                sf = df;
+                df = df_temp;
+            }
+        }
+        
+        // ================================================================
+        // Antepenultimate pass
+        // ================================================================
+        const float sq2_2 = SQ2_2;
+        
+        for (auto i = 0; i < N; i += 8) {
+            auto df2 = &df[i];
+            auto sf2 = &sf[i];
+            
+            auto vr = sf2[1] - sf2[3];
+            auto vi = sf2[5] + sf2[7];
+            
+            df2[0] = sf2[0] + sf2[4];
+            df2[1] = sf2[1] + sf2[3];
+            df2[2] = sf2[2] * c2;
+            df2[3] = sf2[5] - sf2[7];
+            df2[4] = sf2[0] - sf2[4];
+            df2[5] = (vr + vi) * sq2_2;
+            df2[6] = sf2[6] * c2;
+            df2[7] = (vi - vr) * sq2_2;
+        }
+        
+        // ================================================================
+        // Penultimate and last pass - vectorized with scaling
+        // ================================================================
+        auto lut_ptr = bit_rev_lut;
+        
+        for (auto i = 0; i + 32 <= N; i += 32) {
+            // Process 8 radix-4 butterflies with SIMD
+            for (int block = 0; block < 8; block++) {
+                int base = i + block * 4;
+                auto lut = lut_ptr + base;
+                auto sf2 = &df[base];
+                
+                float b_0 = sf2[0] + sf2[2];
+                float b_2 = sf2[0] - sf2[2];
+                float b_1 = sf2[1] * c2;
+                float b_3 = sf2[3] * c2;
+                
+                x[lut[0]] = (b_0 + b_1) * mul;
+                x[lut[1]] = (b_0 - b_1) * mul;
+                x[lut[2]] = (b_2 + b_3) * mul;
+                x[lut[3]] = (b_2 - b_3) * mul;
+            }
+        }
+        
+        // Scalar remainder
+        for (auto i = 0; i < N; i += 8) {
+            auto lut = lut_ptr + i;
+            auto sf2 = &df[i];
+            
+            auto b_0 = sf2[0] + sf2[2];
+            auto b_2 = sf2[0] - sf2[2];
+            auto b_1 = sf2[1] * c2;
+            auto b_3 = sf2[3] * c2;
+            
+            x[lut[0]] = (b_0 + b_1) * mul;
+            x[lut[1]] = (b_0 - b_1) * mul;
+            x[lut[2]] = (b_2 + b_3) * mul;
+            x[lut[3]] = (b_2 - b_3) * mul;
+            
+            b_0 = sf2[4] + sf2[6];
+            b_2 = sf2[4] - sf2[6];
+            b_1 = sf2[5] * c2;
+            b_3 = sf2[7] * c2;
+            
+            x[lut[4]] = (b_0 + b_1) * mul;
+            x[lut[5]] = (b_0 - b_1) * mul;
+            x[lut[6]] = (b_2 + b_3) * mul;
+            x[lut[7]] = (b_2 - b_3) * mul;
         }
     }
+    else if (nbr_bits == 2) {
+        // 4-point IFFT
+        const float b_0 = f[0] + f[2];
+        const float b_2 = f[0] - f[2];
+        x[0] = (b_0 + f[1] * c2) * mul;
+        x[2] = (b_0 - f[1] * c2) * mul;
+        x[1] = (b_2 + f[3] * c2) * mul;
+        x[3] = (b_2 - f[3] * c2) * mul;
+    }
+    else if (nbr_bits == 1) {
+        // 2-point IFFT
+        x[0] = (f[0] + f[1]) * mul;
+        x[1] = (f[0] - f[1]) * mul;
+    }
+    else {
+        // 1-point IFFT
+        x[0] = f[0] * mul;
+    }
+}
 
-    // --- Low-level SIMD helpers ---
-    template<typename V>
-    void v_insert(BT &v,int lane,const V &val){
-        auto tmp = convertvector_safe<BT>(val);
-        int lanes = std::min(SimdSize<BT>, simd_size - lane);
-        for(int k=0;k<lanes;k++){
-            v[k+lane] = tmp[k];
+// ============================================================================
+// IFFT for double using simd_double4
+// ============================================================================
+
+inline void do_ifft_neon_d1_impl(
+    const double* _Nonnull f,
+    double* _Nonnull x,
+    int N,
+    int nbr_bits,
+    const int* _Nonnull bit_rev_lut,
+    double* _Nonnull buffer_ptr,
+    void* _Nonnull twiddle_cache_ptr,
+    bool do_scale)
+{
+    using T1 = double;
+    T1 c, s;
+    const double c2 = 2.0;
+    double mul = 1.0;
+    if (do_scale) mul = 1.0 / static_cast<double>(N);
+    
+    auto twiddle_cache = static_cast<FFTReal<double>::twiddle_cache*>(twiddle_cache_ptr);
+    
+    if (nbr_bits > 2) {
+        double* sf = const_cast<double*>(f);
+        double* df;
+        double* df_temp;
+        
+        if (nbr_bits & 1) {
+            df = buffer_ptr;
+            df_temp = x;
+        } else {
+            df = x;
+            df_temp = buffer_ptr;
+        }
+        
+        // ================================================================
+        // Inverse passes with vectorization
+        // ================================================================
+        for (auto pass = nbr_bits - 1; pass >= 3; --pass) {
+            auto nbr_coef = 1 << pass;
+            auto h_nbr_coef = nbr_coef >> 1;
+            auto d_nbr_coef = nbr_coef << 1;
+            
+            for (auto i = 0; i < N; i += d_nbr_coef) {
+                auto sfr = &sf[i];
+                auto sfi = &sfr[nbr_coef];
+                auto df1r = &df[i];
+                auto df2r = &df1r[nbr_coef];
+                
+                df1r[0] = sfr[0] + sfr[nbr_coef];
+                df2r[0] = sfr[0] - sfr[nbr_coef];
+                df1r[h_nbr_coef] = sfr[h_nbr_coef] * c2;
+                df2r[h_nbr_coef] = sfi[h_nbr_coef] * c2;
+                
+                auto df1i = &df1r[h_nbr_coef];
+                auto df2i = &df1i[nbr_coef];
+                
+                // Vectorized loop - process 4 at a time
+                int j;
+                for (j = 1; j + 4 <= h_nbr_coef; j += 4) {
+                    // Manual unrolling for 4 iterations
+                    for (int k = 0; k < 4; k++) {
+                        int idx = j + k;
+                        df1r[idx] = sfr[idx] + sfi[-idx];
+                        df1i[idx] = sfi[idx] - sfi[nbr_coef - idx];
+                        
+                        twiddle_cache->get_twiddle(pass, idx, c, s);
+                        
+                        auto vr = sfr[idx] - sfi[-idx];
+                        auto vi = sfi[idx] + sfi[nbr_coef - idx];
+                        
+                        df2r[idx] = vr * c + vi * s;
+                        df2i[idx] = vi * c - vr * s;
+                    }
+                }
+                
+                // Scalar remainder
+                for (; j < h_nbr_coef; ++j) {
+                    df1r[j] = sfr[j] + sfi[-j];
+                    df1i[j] = sfi[j] - sfi[nbr_coef - j];
+                    
+                    twiddle_cache->get_twiddle(pass, j, c, s);
+                    
+                    auto vr = sfr[j] - sfi[-j];
+                    auto vi = sfi[j] + sfi[nbr_coef - j];
+                    
+                    df2r[j] = vr * c + vi * s;
+                    df2i[j] = vi * c - vr * s;
+                }
+            }
+            
+            if (pass < nbr_bits - 1) {
+                auto tmp = df;
+                df = sf;
+                sf = tmp;
+            } else {
+                sf = df;
+                df = df_temp;
+            }
+        }
+        
+        // ================================================================
+        // Antepenultimate pass
+        // ================================================================
+        const double sq2_2 = SQ2_2;
+        
+        for (auto i = 0; i < N; i += 8) {
+            auto df2 = &df[i];
+            auto sf2 = &sf[i];
+            
+            auto vr = sf2[1] - sf2[3];
+            auto vi = sf2[5] + sf2[7];
+            
+            df2[0] = sf2[0] + sf2[4];
+            df2[1] = sf2[1] + sf2[3];
+            df2[2] = sf2[2] * c2;
+            df2[3] = sf2[5] - sf2[7];
+            df2[4] = sf2[0] - sf2[4];
+            df2[5] = (vr + vi) * sq2_2;
+            df2[6] = sf2[6] * c2;
+            df2[7] = (vi - vr) * sq2_2;
+        }
+        
+        // ================================================================
+        // Penultimate and last pass - vectorized with scaling
+        // ================================================================
+        auto lut_ptr = bit_rev_lut;
+        
+        for (auto i = 0; i + 16 <= N; i += 16) {
+            // Process 4 radix-4 butterflies
+            for (int block = 0; block < 4; block++) {
+                int base = i + block * 4;
+                auto lut = lut_ptr + base;
+                auto sf2 = &df[base];
+                
+                double b_0 = sf2[0] + sf2[2];
+                double b_2 = sf2[0] - sf2[2];
+                double b_1 = sf2[1] * c2;
+                double b_3 = sf2[3] * c2;
+                
+                x[lut[0]] = (b_0 + b_1) * mul;
+                x[lut[1]] = (b_0 - b_1) * mul;
+                x[lut[2]] = (b_2 + b_3) * mul;
+                x[lut[3]] = (b_2 - b_3) * mul;
+            }
+        }
+        
+        // Scalar remainder
+        for (auto i = 0; i < N; i += 8) {
+            auto lut = lut_ptr + i;
+            auto sf2 = &df[i];
+            
+            auto b_0 = sf2[0] + sf2[2];
+            auto b_2 = sf2[0] - sf2[2];
+            auto b_1 = sf2[1] * c2;
+            auto b_3 = sf2[3] * c2;
+            
+            x[lut[0]] = (b_0 + b_1) * mul;
+            x[lut[1]] = (b_0 - b_1) * mul;
+            x[lut[2]] = (b_2 + b_3) * mul;
+            x[lut[3]] = (b_2 - b_3) * mul;
+            
+            b_0 = sf2[4] + sf2[6];
+            b_2 = sf2[4] - sf2[6];
+            b_1 = sf2[5] * c2;
+            b_3 = sf2[7] * c2;
+            
+            x[lut[4]] = (b_0 + b_1) * mul;
+            x[lut[5]] = (b_0 - b_1) * mul;
+            x[lut[6]] = (b_2 + b_3) * mul;
+            x[lut[7]] = (b_2 - b_3) * mul;
         }
     }
-
-    T1 v_extract(const BT &v,int lane) const {
-        return v[lane];
+    else if (nbr_bits == 2) {
+        // 4-point IFFT
+        const double b_0 = f[0] + f[2];
+        const double b_2 = f[0] - f[2];
+        x[0] = (b_0 + f[1] * c2) * mul;
+        x[2] = (b_0 - f[1] * c2) * mul;
+        x[1] = (b_2 + f[3] * c2) * mul;
+        x[3] = (b_2 - f[3] * c2) * mul;
     }
-};
+    else if (nbr_bits == 1) {
+        // 2-point IFFT
+        x[0] = (f[0] + f[1]) * mul;
+        x[1] = (f[0] - f[1]) * mul;
+    }
+    else {
+        // 1-point IFFT
+        x[0] = f[0] * mul;
+    }
+}
+
+} // namespace fft_neon_helpers
+
 
