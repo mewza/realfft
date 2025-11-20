@@ -1,19 +1,11 @@
-FFTReal v1.3
+FFTReal v1.4
 ------------
 
-NEW (v1.3): I decided to give away the highly optimized NEON code!  This is my gift and contribution
-            to betterment of humanity. Enjoy, humanity, and (stop killing each other, stealing, plagirizing,
-            work together and share fairly the winning! One more stipulation, if you somehow manage to create 
-            a faster optimization without sacrificing precision, and I dare you to! Then you must send me an 
-            email with your version of optimizations. That's it!
+<b>NEW (v1.4):</b> Added FFTRealHybrid auto-optimizer class so you can continue constructing FFTReal with scalars or simd type vectors, and it will auto-optimize it with best possible vector SIMD to get maximum performane. So if you were to pass FFTRealHybrid it would actually process FFTReal internally with simd_float8 but you will see data resulting from forward transform as cmplxT. So, this is essentially an optimizer class for float, simd_float2, simd_float4, double, simd_double2 types utilizing SIMD architecture. 
 
 How to reach me: 
             Dmitry Boldyrev <subband@gmail.com> or 
                             <subband@protonmail.com>
-                            
-TODO: Implement hybrid vectorization for base types : float, double utilizing vector simd_float8
-and simd_double8 neon and non-neon instructions, or optimization of utilizing simd_float4 for 
-simd_float8 template T for example.
 
 This is the best (fastest, most precise and best sounding) real FFT/iFFT transform available 
 in existence! I have gone through at least 10, and kept upgrading until I found this 
