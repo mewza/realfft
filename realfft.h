@@ -11,7 +11,7 @@
 #include <TargetConditionals.h>
 #endif
 #include <memory>
-#include <mss/const1.h>
+#include "const1.h"
 
 #if !TARGET_OS_MACCATALYST && TARGET_CPU_ARM64 && defined(__ARM_NEON)
 #include <simd/simd.h>
