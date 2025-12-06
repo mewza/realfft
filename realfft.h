@@ -1,16 +1,15 @@
-//  realfft.h - A highly optimized C++ SIMD vector T templated FFT/iFFT transform
+//  realfft.h - A highly optimized C++ SIMD vector templated class
 //  ---
-//  FFTReal v1.5 (C) 2025 Dmitry Boldyrev <subband@gmail.com>
+//  FFTReal v1.4 (C) 2025 Dmitry Boldyrev <subband@gmail.com>
 //  Pascal version (C) 2024 Laurent de Soras <ldesoras@club-internet.fr>
 //  Object Pascal port (C) 2024 Frederic Vanmol <frederic@fruityloops.com>
 //
-//  NOTE: I decided to give away the highly optimized NEON code!  Enjoy, humanity,
-//        and get well! 
-
 
 #pragma once
 
+#ifdef __APPLE__
 #include <TargetConditionals.h>
+#endif
 #include <memory>
 #include "const1.h"
 
@@ -67,6 +66,21 @@ protected:
     T*_Nullable yy = nullptr;
     T*_Nullable xx = nullptr;
     
+    static constexpr bool is_simd_vector = std::is_same_v<T, simd_float8> ||
+                                   std::is_same_v<T, simd_float4> ||
+                                   std::is_same_v<T, simd_float2> ||
+                                   std::is_same_v<T, simd_double8> ||
+                                   std::is_same_v<T, simd_double4> ||
+                                   std::is_same_v<T, simd_double2>;
+
+    static constexpr bool is_float_based = std::is_arithmetic_v<T>
+        ? (sizeof(T) == sizeof(float))
+        : (sizeof(T) == sizeof(float) && !is_simd_vector);
+
+    static constexpr bool is_double_based = std::is_arithmetic_v<T>
+        ? (sizeof(T) == sizeof(double))
+        : (sizeof(T) == sizeof(double) && !is_simd_vector);
+        
 public:
     FFTReal(const int n) :
     _N(n),
@@ -77,9 +91,9 @@ public:
         yy = alignedAlloc<T>((n + 1) * 2);
         xx = alignedAlloc<T>(n);
         
-        _trigo_lut = std::make_unique<trigo_lookup>(_nbr_bits);
-        _bit_rev_lut = std::make_unique<bit_rev_lut>(_nbr_bits, _N);
-        _twiddle_cache = std::make_unique<twiddle_cache>(_nbr_bits, _N2);
+        _trigo_lut = std::make_unique<TrigoLookup>(_nbr_bits);
+        _bit_rev_lut = std::make_unique<BitRevLUT>(_nbr_bits, _N);
+        _twiddle_cache = std::make_unique<TwiddleCache>(_nbr_bits, _N2);
     }
     
     ~FFTReal() {
@@ -113,21 +127,22 @@ public:
     
     void real_fft(const T*_Nonnull x, cmplxT<T>*_Nonnull y, bool do_scale = false)
     {
+        
         T mul = 1.0;
         cmplxT<T> c;
         if (do_scale) {
-            for (int i=0; i < _N; i++) {
+            for (int i = 0; i < _N; i++) {
                 xx[i] = x[i] * 0.5;
             }
         } else {
             memcpy(xx, x, _N * sizeof(T));
         }
-        if constexpr( std::is_same_v<T, float> ) {
+        if constexpr( is_float_based ) {
             fft_simd_helpers::do_fft_simd_f1_impl(xx, yy, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()));
         }
-        else if constexpr( std::is_same_v<T, double> ) {
+        else if constexpr( is_double_based ) {
             fft_simd_helpers::do_fft_simd_d1_impl(xx, yy, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()));
-        }
+        } else
 #if FFT_USE_NEON
         if constexpr( std::is_same_v<T, simd_double8> ) {
             do_fft_neon_d8(xx, yy);
@@ -145,15 +160,15 @@ public:
             do_fft_neon_d1(xx, yy);
         } else if constexpr( std::is_same_v<T, float> ) {
             do_fft_neon_f1(xx, yy);
-        }
+        } else
 #endif
-        else {
+        {
             do_fft(xx, yy);
         }
         if (do_scale) mul *= 1./(T1)_N;
         
         y[0] = cmplxT<T>(yy[0], 0.0) * mul;           // DC
-        for (int i=1; i < _N2; i++) {
+        for (int i = 1; i < _N2; i++) {
             y[i] = cmplxT<T>(yy[i], yy[i + _N2]) * mul;  // Regular bins
         }
         y[_N2] = cmplxT<T>(yy[_N2], 0.0) * mul;       // ✓ Nyquist (same scaling as DC)
@@ -180,12 +195,12 @@ public:
         }
         yy[   0 ] = x[0].re;      // DC
         yy[ _N2 ] = x[_N2].re;    // ✓ Nyquist from input, not forced to 0!
-        
-        if constexpr( std::is_same_v<T, float> ) {
+    
+       /* if constexpr( is_float_based ) {
             fft_simd_helpers::do_ifft_simd_f1_impl(yy, y, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
-        } else if constexpr( std::is_same_v<T, double> ) {
+        } else if constexpr( is_double_based ) {
             fft_simd_helpers::do_ifft_simd_d1_impl(yy, y, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
-        }
+        } else */
 #if FFT_USE_NEON
         if constexpr( std::is_same_v<T, simd_double8> ) {
             do_ifft_neon_d8(yy, y, do_scale);
@@ -203,9 +218,9 @@ public:
             do_ifft_neon_d1(yy, y, do_scale);
         } else if constexpr( std::is_same_v<T, float> ) {
             do_ifft_neon_f1(yy, y, do_scale);
-        }
+        } else
 #endif
-        else {
+        {
             do_ifft(yy, y, do_scale);
         }
     }
@@ -546,6 +561,10 @@ public:
             x[i] *= mul;
     }
     
+    inline int size() const {
+        return _N;
+    }
+    
     inline void do_rescale(cmplxT<T> *_Nonnull x) const {
         const T mul = 1./(T1)_N;
         x[0] = cmplxT<T>(x[0].re, 0.0) * mul;
@@ -575,63 +594,99 @@ public:
         }
     }
     
-    
-    class twiddle_cache {
-    protected:
-        T1*_Nullable*_Nullable cos_data = nullptr;
-        T1*_Nullable*_Nullable sin_data = nullptr;
-        int nbr_bits = 0;
-        int N2 = 0;
+    class TwiddleCache {
     public:
-        twiddle_cache(int bits, int n2): nbr_bits(bits), N2(n2) {
-            // Allocate 2D arrays using heap
-            cos_data = FFTReal::alignedAlloc<T1*>(nbr_bits);
-            sin_data = FFTReal::alignedAlloc<T1*>(nbr_bits);
+        static constexpr int VecWidth = 1;
+        
+    private:
+        T1*_Nullable cos_data{nullptr};      // Contiguous cos values for all passes
+        T1*_Nullable sin_data{nullptr};      // Contiguous sin values for all passes
+        int*_Nullable pass_offsets{nullptr}; // Offset into arrays for each pass
+        int nbr_bits{0};
+        int total_size{0};
+        int N2{0};
+        
+    public:
+        TwiddleCache(int bits, int n2) : nbr_bits(bits), N2(n2) {
+            // Calculate total storage needed
+            pass_offsets = callocT<int>(nbr_bits + 1);
             
+            total_size = 0;
             for (int pass = 0; pass < nbr_bits; pass++) {
-                cos_data[pass] = FFTReal::alignedAlloc<T1>(N2);
-                sin_data[pass] = FFTReal::alignedAlloc<T1>(N2);
-                
+                pass_offsets[pass] = total_size;
+                int h_nbr_coef = (1 << pass) >> 1;
+                // Round up to vector width for aligned SIMD loads
+                int aligned_size = ((h_nbr_coef + VecWidth - 1) / VecWidth) * VecWidth;
+                total_size += aligned_size;
+            }
+            pass_offsets[nbr_bits] = total_size;
+            
+            // Allocate with 64-byte alignment for cache line optimization
+            cos_data = callocT<T1>(total_size);
+            sin_data = callocT<T1>(total_size);
+            
+            // Initialize zeros (padding)
+            memset(cos_data, 0, total_size * sizeof(T1));
+            memset(sin_data, 0, total_size * sizeof(T1));
+            
+            // Compute twiddle factors
+            for (int pass = 0; pass < nbr_bits; pass++) {
                 int nbr_coef = 1 << pass;
                 int h_nbr_coef = nbr_coef >> 1;
+                int offset = pass_offsets[pass];
                 
-                // Skip passes with no coefficients
-                if (h_nbr_coef <= 0) continue;
-                
-                // Initialize for this pass
-                for (int j = 0; j < h_nbr_coef && j < N2; j++) {
-                    T1 angle = (j * M_PI) / nbr_coef;
-                    cos_data[pass][j] = F_COS(angle);
-                    sin_data[pass][j] = F_SIN(angle); // F_COS(M_PI/2 - angle);
+                for (int j = 0; j < h_nbr_coef; j++) {
+                    const T1 angle = T1(j * M_PI) / T1(nbr_coef);
+                    cos_data[offset + j] = F_COS(angle);
+                    sin_data[offset + j] = F_SIN(angle);
                 }
             }
         }
         
-        ~twiddle_cache() {
-            if (cos_data) {
-                for (int i = 0; i < nbr_bits; i++) {
-                    FFTReal::alignedFree(cos_data[i]);
-                    FFTReal::alignedFree(sin_data[i]);
-                }
-                FFTReal::alignedFree(cos_data);
-                FFTReal::alignedFree(sin_data);
-            }
+        ~TwiddleCache() {
+            callocT_free(cos_data);
+            callocT_free(sin_data);
+            callocT_free(pass_offsets);
         }
         
-        twiddle_cache(twiddle_cache&& other) noexcept :
-            nbr_bits(other.nbr_bits),
-            N2(other.N2),
-            cos_data(std::move(other.cos_data)),
-            sin_data(std::move(other.sin_data))
-        {
-            other.nbr_bits = 0;
-            other.N2 = 0;
-            // other.offsets = nullptr;
+        // Get raw pointers for a pass (for SIMD vector loads)
+        inline const T1* get_cos_ptr(int pass) const {
+            return cos_data + pass_offsets[pass];
+        }
+        
+        inline const T1* get_sin_ptr(int pass) const {
+            return sin_data + pass_offsets[pass];
+        }
+        
+        // Scalar access (for remainder loops)
+        inline void get_twiddle(int pass, int j, T1& c, T1& s) const {
+            int offset = pass_offsets[pass] + j;
+            c = cos_data[offset];
+            s = sin_data[offset];
+        }
+        
+        // Prefetch next cache line
+        inline void prefetch_next(int pass, int j) const {
+            int offset = pass_offsets[pass] + j;
+            __builtin_prefetch(cos_data + offset + 16, 0, 3);
+            __builtin_prefetch(sin_data + offset + 16, 0, 3);
+        }
+        
+        // Delete copy operations
+        TwiddleCache(const TwiddleCache&) = delete;
+        TwiddleCache& operator=(const TwiddleCache&) = delete;
+        
+        // Move operations
+        TwiddleCache(TwiddleCache&& other) noexcept
+            : cos_data(other.cos_data), sin_data(other.sin_data),
+              pass_offsets(other.pass_offsets), nbr_bits(other.nbr_bits),
+              total_size(other.total_size) {
             other.cos_data = nullptr;
+            other.sin_data = nullptr;
+            other.pass_offsets = nullptr;
         }
-        
         // Implement move assignment
-        twiddle_cache& operator=(twiddle_cache&& other) noexcept {
+        TwiddleCache& operator=(TwiddleCache&& other) noexcept {
             if (this != &other) {
                 alignedFree(cos_data);
                 alignedFree(sin_data);
@@ -649,19 +704,7 @@ public:
             return *this;
         }
         
-        // Delete copy constructor and assignment to avoid double-free issues
-        twiddle_cache(const twiddle_cache&) = delete;
-        twiddle_cache& operator=(const twiddle_cache&) = delete;
-        
-        inline void get_twiddle(int pass, int j, T1& cos_val, T1& sin_val) const
-        {
-            if (pass >= 0 && pass < nbr_bits && j >= 0 && j < N2) {
-                cos_val = cos_data[pass][j];
-                sin_val = sin_data[pass][j];
-            }
-        }
     };
-    
     
 protected:
     
@@ -1796,7 +1839,7 @@ protected:
         }
     }
     
-    class trigo_lookup {
+    class TrigoLookup {
     protected:
         int*_Nullable offsets = nullptr;
         T1*_Nullable cos_data = nullptr;
@@ -1804,7 +1847,7 @@ protected:
     public:
         
         
-        trigo_lookup(int bits) : nbr_bits(bits) {
+        TrigoLookup(int bits) : nbr_bits(bits) {
             int total_coef = 0;
             
             // Allocate with alignment
@@ -1832,7 +1875,7 @@ protected:
             }
         }
         
-        ~trigo_lookup() {
+        ~TrigoLookup() {
             FFTReal::alignedFree(offsets);
             FFTReal::alignedFree(cos_data);
         }
@@ -1842,7 +1885,7 @@ protected:
             return &cos_data[ offsets[pass] ];
         }
         
-        trigo_lookup(trigo_lookup&& other) noexcept :
+        TrigoLookup(TrigoLookup&& other) noexcept :
         nbr_bits(other.nbr_bits),
         offsets(other.offsets),
         cos_data(other.cos_data)
@@ -1853,7 +1896,7 @@ protected:
         }
         
         // Implement move assignment
-        trigo_lookup& operator=(trigo_lookup&& other) noexcept {
+        TrigoLookup& operator=(TrigoLookup&& other) noexcept {
             if (this != &other) {
                 alignedFree(offsets);
                 alignedFree(cos_data);
@@ -1870,16 +1913,16 @@ protected:
         }
         
         // Delete copy constructor and assignment to avoid double-free issues
-        trigo_lookup(const trigo_lookup&) = delete;
-        trigo_lookup& operator=(const trigo_lookup&) = delete;
+        TrigoLookup(const TrigoLookup&) = delete;
+        TrigoLookup& operator=(const TrigoLookup&) = delete;
     };
     
-    class bit_rev_lut {
+    class BitRevLUT {
     protected:
         int *_Nullable indices{nullptr};
         int N{0}, nbr_bits{0};
     public:
-        bit_rev_lut(int bits, int n) : nbr_bits(bits), N(n) {
+        BitRevLUT(int bits, int n) : nbr_bits(bits), N(n) {
             indices = FFTReal::alignedAlloc<int>(N);
             for (int i = 0; i < N; i++) {
                 int rev = 0;
@@ -1893,10 +1936,10 @@ protected:
             return indices;
         }
         
-        bit_rev_lut(bit_rev_lut&& other) noexcept :
-        nbr_bits(other.nbr_bits),
-        N(other.N),
-        indices(std::move(other.indices))
+        BitRevLUT(BitRevLUT&& other) noexcept :
+            nbr_bits(other.nbr_bits),
+            N(other.N),
+            indices(std::move(other.indices))
         {
             other.nbr_bits = 0;
             other.N = 0;
@@ -1904,7 +1947,7 @@ protected:
         }
         
         // Implement move assignment
-        bit_rev_lut& operator=(bit_rev_lut&& other) noexcept {
+        BitRevLUT& operator=(BitRevLUT&& other) noexcept {
             if (this != &other) {
                 alignedFree(indices);
                 
@@ -1920,19 +1963,19 @@ protected:
         }
         
         // Delete copy constructor and assignment to avoid double-free issues
-        bit_rev_lut(const bit_rev_lut&) = delete;
-        bit_rev_lut& operator=(const bit_rev_lut&) = delete;
+        BitRevLUT(const BitRevLUT&) = delete;
+        BitRevLUT& operator=(const BitRevLUT&) = delete;
         
-        ~bit_rev_lut() {
+        ~BitRevLUT() {
             FFTReal::alignedFree(indices);
         }
     };
 
     // Bit-reversal lookup table for FFT without std::vector
     
-    std::unique_ptr<trigo_lookup>   _trigo_lut;
-    std::unique_ptr<bit_rev_lut>    _bit_rev_lut;
-    std::unique_ptr<twiddle_cache>  _twiddle_cache;
+    std::unique_ptr<TrigoLookup>   _trigo_lut;
+    std::unique_ptr<BitRevLUT>      _bit_rev_lut;
+    std::unique_ptr<TwiddleCache>  _twiddle_cache;
     
 #if FFT_USE_NEON
     
@@ -1960,7 +2003,294 @@ protected:
 #define likely(x)   __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
     
-    void do_fft_neon_f1(const float *_Nonnull x, float *_Nonnull f)
+    // ============================================================================
+    // CRITICAL OPTIMIZATION: FMLA/FMLS Butterfly Macros
+    // ============================================================================
+    // From Apple guide Section 3.5.4:
+    // "FMLA executes in 4 cycles (same as FMUL alone), vs 7 cycles for
+    //  separate FMUL+FADD"
+    // "Latency through multiply inputs: 4 cycles"
+    // "Latency through add/accumulate input: 4 cycles (vs 3 for standalone FADD)"
+    // ============================================================================
+
+    // Complex multiply: (a + ib) * (cos - i*sin) = (a*cos + b*sin) + i(b*cos - a*sin)
+    // For FFT twiddle: result_r = a*cos + b*sin, result_i = b*cos - a*sin
+
+    // Float version using FMLA/FMLS
+    static inline void butterfly_twiddle_f32x4(
+        float32x4_t sf1r, float32x4_t sf1i,
+        float32x4_t sf2r, float32x4_t sf2i,
+        float32x4_t vcos, float32x4_t vsin,
+        float32x4_t& dfr_pos, float32x4_t& dfr_neg,
+        float32x4_t& dfi_pos, float32x4_t& dfi_neg)
+    {
+        // vr = sf2r * cos - sf2i * sin  (complex multiply real part)
+        // Using FMLS: vr = (sf2r * cos) - sf2i * sin
+        float32x4_t vr = vmulq_f32(sf2r, vcos);
+        vr = vfmsq_f32(vr, sf2i, vsin);  // FMLS: vr = vr - sf2i*sin
+        
+        // vi = sf2r * sin + sf2i * cos  (complex multiply imag part)
+        // Using FMLA: vi = (sf2r * sin) + sf2i * cos
+        float32x4_t vi = vmulq_f32(sf2r, vsin);
+        vi = vfmaq_f32(vi, sf2i, vcos);  // FMLA: vi = vi + sf2i*cos
+        
+        // Butterfly: add/subtract
+        dfr_pos = vaddq_f32(sf1r, vr);
+        dfr_neg = vsubq_f32(sf1r, vr);
+        dfi_pos = vaddq_f32(vi, sf1i);
+        dfi_neg = vsubq_f32(vi, sf1i);
+    }
+
+    
+    inline void do_fft_neon_f1(
+        const float* __restrict x,
+        float* __restrict f)
+    {
+        if (_nbr_bits > 2) {
+            float *sf, *df;
+            if (_nbr_bits & 1) {
+                df = buffer_ptr;
+                sf = f;
+            } else {
+                df = f;
+                sf = buffer_ptr;
+            }
+            
+            const int* lut = _bit_rev_lut->get_ptr();
+            
+            // ================================================================
+            // Pass 1+2: Radix-4 with bit reversal
+            // Vectorized: process 4 radix-4 butterflies (16 samples) at once
+            // ================================================================
+            int i = 0;
+            
+            // Prefetch first data
+            __builtin_prefetch(x + lut[0], 0, 3);
+            __builtin_prefetch(x + lut[16], 0, 3);
+            
+            for (; i + 16 <= _N; i += 16) {
+                // Prefetch next iteration's data
+                if (i + 32 <= _N) {
+                    __builtin_prefetch(x + lut[i + 16], 0, 3);
+                    __builtin_prefetch(x + lut[i + 24], 0, 3);
+                }
+                
+                // Load 4 radix-4 butterflies worth of data
+                float32x4_t x0, x1, x2, x3;
+                
+                // Manual gather (unavoidable due to bit-reversal)
+                float x0_arr[4], x1_arr[4], x2_arr[4], x3_arr[4];
+                for (int j = 0; j < 4; j++) {
+                    int idx = i + j * 4;
+                    x0_arr[j] = x[lut[idx]];
+                    x1_arr[j] = x[lut[idx + 1]];
+                    x2_arr[j] = x[lut[idx + 2]];
+                    x3_arr[j] = x[lut[idx + 3]];
+                }
+                
+                x0 = vld1q_f32(x0_arr);
+                x1 = vld1q_f32(x1_arr);
+                x2 = vld1q_f32(x2_arr);
+                x3 = vld1q_f32(x3_arr);
+                
+                // Radix-4 butterfly
+                float32x4_t t0 = vaddq_f32(x0, x2);
+                float32x4_t t1 = vaddq_f32(x1, x3);
+                float32x4_t t2 = vsubq_f32(x0, x2);
+                float32x4_t t3 = vsubq_f32(x1, x3);
+                
+                float32x4_t out0 = vaddq_f32(t0, t1);
+                float32x4_t out2 = vsubq_f32(t0, t1);
+                float32x4_t out1 = t2;
+                float32x4_t out3 = t3;
+                
+                // Store (scattered due to output layout)
+                float out0_arr[4], out1_arr[4], out2_arr[4], out3_arr[4];
+                vst1q_f32(out0_arr, out0);
+                vst1q_f32(out1_arr, out1);
+                vst1q_f32(out2_arr, out2);
+                vst1q_f32(out3_arr, out3);
+                
+                for (int j = 0; j < 4; j++) {
+                    int idx = i + j * 4;
+                    df[idx]     = out0_arr[j];
+                    df[idx + 1] = out1_arr[j];
+                    df[idx + 2] = out2_arr[j];
+                    df[idx + 3] = out3_arr[j];
+                }
+            }
+            
+            // Scalar remainder
+            for (; i < _N; i += 4) {
+                float* df2 = &df[i];
+                float x0_s = x[lut[i]];
+                float x1_s = x[lut[i + 1]];
+                float x2_s = x[lut[i + 2]];
+                float x3_s = x[lut[i + 3]];
+                
+                df2[0] = x0_s + x1_s + x2_s + x3_s;
+                df2[1] = x0_s - x1_s;
+                df2[2] = x0_s + x1_s - x2_s - x3_s;
+                df2[3] = x2_s - x3_s;
+            }
+            
+            // ================================================================
+            // Pass 3: Radix-8 with sqrt(2)/2 multiplications
+            // Using FMLA for (v5 ± v7) * SQ2_2 patterns
+            // ================================================================
+            const float32x4_t vSQ2_2 = vdupq_n_f32(static_cast<float>(SQ2_2));
+            
+            for (i = 0; i < _N; i += 8) {
+                float* sf2 = &sf[i];
+                float* df2 = &df[i];
+                
+                // Prefetch next block
+                if (i + 8 < _N) {
+                    __builtin_prefetch(df2 + 8, 0, 3);
+                }
+                
+                // Load 8 values
+                float32x4_t v0123 = vld1q_f32(df2);
+                float32x4_t v4567 = vld1q_f32(df2 + 4);
+                
+                // Extract individual elements for radix-8 pattern
+                float v0 = vgetq_lane_f32(v0123, 0);
+                float v1 = vgetq_lane_f32(v0123, 1);
+                float v2 = vgetq_lane_f32(v0123, 2);
+                float v3 = vgetq_lane_f32(v0123, 3);
+                float v4 = vgetq_lane_f32(v4567, 0);
+                float v5 = vgetq_lane_f32(v4567, 1);
+                float v6 = vgetq_lane_f32(v4567, 2);
+                float v7 = vgetq_lane_f32(v4567, 3);
+                
+                // Radix-8 butterfly
+                sf2[0] = v0 + v4;
+                sf2[4] = v0 - v4;
+                sf2[2] = v2;
+                sf2[6] = v6;
+                
+                float t_diff = (v5 - v7) * static_cast<float>(SQ2_2);
+                sf2[1] = v1 + t_diff;
+                sf2[3] = v1 - t_diff;
+                
+                float t_sum = (v5 + v7) * static_cast<float>(SQ2_2);
+                sf2[5] = t_sum + v3;
+                sf2[7] = t_sum - v3;
+            }
+            
+            // ================================================================
+            // Passes 4+: Twiddle factor stages with FMLA/FMLS
+            // ================================================================
+            for (int pass = 3; pass < _nbr_bits; ++pass) {
+                int nbr_coef = 1 << pass;
+                int h_nbr_coef = nbr_coef >> 1;
+                int d_nbr_coef = nbr_coef << 1;
+                
+                const float* cos_ptr = _twiddle_cache->get_cos_ptr(pass);
+                const float* sin_ptr = _twiddle_cache->get_sin_ptr(pass);
+                
+                for (int idx = 0; idx < _N; idx += d_nbr_coef) {
+                    float* sf1r = sf + idx;
+                    float* sf2r = sf1r + nbr_coef;
+                    float* dfr = df + idx;
+                    float* dfi = dfr + nbr_coef;
+                    
+                    // Extreme coefficients (always real)
+                    dfr[0] = sf1r[0] + sf2r[0];
+                    dfi[0] = sf1r[0] - sf2r[0];
+                    dfr[h_nbr_coef] = sf1r[h_nbr_coef];
+                    dfi[h_nbr_coef] = sf2r[h_nbr_coef];
+                    
+                    float* sf1i = &sf1r[h_nbr_coef];
+                    float* sf2i = &sf1i[nbr_coef];
+                    
+                    // Prefetch twiddle factors for this block
+                    __builtin_prefetch(cos_ptr, 0, 3);
+                    __builtin_prefetch(sin_ptr, 0, 3);
+                    
+                    // ============================================================
+                    // VECTORIZED INNER LOOP with FMLA/FMLS
+                    // Process 4 complex values at once
+                    // ============================================================
+                    int j = 1;
+                    for (; j + 4 <= h_nbr_coef; j += 4) {
+                        // Prefetch next twiddle factors
+                        if (j + 8 <= h_nbr_coef) {
+                            __builtin_prefetch(cos_ptr + j + 4, 0, 3);
+                            __builtin_prefetch(sin_ptr + j + 4, 0, 3);
+                        }
+                        
+                        // Load twiddle factors (contiguous - optimal!)
+                        float32x4_t vcos = vld1q_f32(cos_ptr + j);
+                        float32x4_t vsin = vld1q_f32(sin_ptr + j);
+                        
+                        // Load source data
+                        float32x4_t sf1r_v = vld1q_f32(sf1r + j);
+                        float32x4_t sf1i_v = vld1q_f32(sf1i + j);
+                        float32x4_t sf2r_v = vld1q_f32(sf2r + j);
+                        float32x4_t sf2i_v = vld1q_f32(sf2i + j);
+                        
+                        // FMLA/FMLS butterfly
+                        float32x4_t dfr_pos, dfr_neg, dfi_pos, dfi_neg;
+                        butterfly_twiddle_f32x4(sf1r_v, sf1i_v, sf2r_v, sf2i_v,
+                                               vcos, vsin,
+                                               dfr_pos, dfr_neg, dfi_pos, dfi_neg);
+                        
+                        // Store results
+                        vst1q_f32(dfr + j, dfr_pos);
+                        vst1q_f32(dfi + j, dfi_pos);
+                        
+                        // Scattered stores for negative indices
+                        float dfr_neg_arr[4], dfi_neg_arr[4];
+                        vst1q_f32(dfr_neg_arr, dfr_neg);
+                        vst1q_f32(dfi_neg_arr, dfi_neg);
+                        
+                        for (int k = 0; k < 4; k++) {
+                            dfi[-(j + k)] = dfr_neg_arr[k];
+                            dfi[nbr_coef - (j + k)] = dfi_neg_arr[k];
+                        }
+                    }
+                    
+                    // Scalar remainder
+                    for (; j < h_nbr_coef; ++j) {
+                        float c = cos_ptr[j];
+                        float s = sin_ptr[j];
+                        
+                        float v = sf2r[j] * c - sf2i[j] * s;
+                        dfr[j] = sf1r[j] + v;
+                        dfi[-j] = sf1r[j] - v;
+                        
+                        v = sf2r[j] * s + sf2i[j] * c;
+                        dfi[j] = v + sf1i[j];
+                        dfi[nbr_coef - j] = v - sf1i[j];
+                    }
+                }
+                
+                // Swap buffers
+                float* tmp = df;
+                df = sf;
+                sf = tmp;
+            }
+        }
+        // Special cases (small FFTs)
+        else if (_nbr_bits == 2) {
+            f[1] = x[0] - x[2];
+            f[3] = x[1] - x[3];
+            float b_0 = x[0] + x[2];
+            float b_2 = x[1] + x[3];
+            f[0] = b_0 + b_2;
+            f[2] = b_0 - b_2;
+        }
+        else if (_nbr_bits == 1) {
+            f[0] = x[0] + x[1];
+            f[1] = x[0] - x[1];
+        }
+        else {
+            f[0] = x[0];
+        }
+    }
+    
+    void do_fft_neon_f1_O(const float *_Nonnull x, float *_Nonnull f)
     {
         float c, s;
         if (likely(_nbr_bits > 2)) {
@@ -2141,7 +2471,230 @@ protected:
         }
     }
     
-    void do_fft_neon_d1(const double *_Nonnull x, double *_Nonnull f)
+    // Double version using FMLA/FMLS
+    static inline void butterfly_twiddle_f64x2(
+        float64x2_t sf1r, float64x2_t sf1i,
+        float64x2_t sf2r, float64x2_t sf2i,
+        float64x2_t vcos, float64x2_t vsin,
+        float64x2_t& dfr_pos, float64x2_t& dfr_neg,
+        float64x2_t& dfi_pos, float64x2_t& dfi_neg)
+    {
+        float64x2_t vr = vmulq_f64(sf2r, vcos);
+        vr = vfmsq_f64(vr, sf2i, vsin);
+        
+        float64x2_t vi = vmulq_f64(sf2r, vsin);
+        vi = vfmaq_f64(vi, sf2i, vcos);
+        
+        dfr_pos = vaddq_f64(sf1r, vr);
+        dfr_neg = vsubq_f64(sf1r, vr);
+        dfi_pos = vaddq_f64(vi, sf1i);
+        dfi_neg = vsubq_f64(vi, sf1i);
+    }
+    
+    inline void do_fft_neon_d1(
+        const double* __restrict x,
+        double* __restrict f)
+    {
+        if (_nbr_bits > 2) {
+            double *sf, *df;
+            if (_nbr_bits & 1) {
+                df = buffer_ptr;
+                sf = f;
+            } else {
+                df = f;
+                sf = buffer_ptr;
+            }
+            
+            const int* lut = _bit_rev_lut->get_ptr();
+            
+            // ================================================================
+            // Pass 1+2: Radix-4 with bit reversal (2-wide SIMD for double)
+            // ================================================================
+            int i = 0;
+            
+            for (; i + 8 <= _N; i += 8) {
+                // Prefetch
+                if (i + 16 <= _N) {
+                    __builtin_prefetch(x + lut[i + 8], 0, 3);
+                }
+                
+                // Process 2 radix-4 butterflies
+                float64x2_t x0, x1, x2, x3;
+                
+                double x0_arr[2], x1_arr[2], x2_arr[2], x3_arr[2];
+                for (int j = 0; j < 2; j++) {
+                    int idx = i + j * 4;
+                    x0_arr[j] = x[lut[idx]];
+                    x1_arr[j] = x[lut[idx + 1]];
+                    x2_arr[j] = x[lut[idx + 2]];
+                    x3_arr[j] = x[lut[idx + 3]];
+                }
+                
+                x0 = vld1q_f64(x0_arr);
+                x1 = vld1q_f64(x1_arr);
+                x2 = vld1q_f64(x2_arr);
+                x3 = vld1q_f64(x3_arr);
+                
+                float64x2_t t0 = vaddq_f64(x0, x2);
+                float64x2_t t1 = vaddq_f64(x1, x3);
+                float64x2_t t2 = vsubq_f64(x0, x2);
+                float64x2_t t3 = vsubq_f64(x1, x3);
+                
+                float64x2_t out0 = vaddq_f64(t0, t1);
+                float64x2_t out2 = vsubq_f64(t0, t1);
+                
+                double out0_arr[2], out1_arr[2], out2_arr[2], out3_arr[2];
+                vst1q_f64(out0_arr, out0);
+                vst1q_f64(out1_arr, t2);
+                vst1q_f64(out2_arr, out2);
+                vst1q_f64(out3_arr, t3);
+                
+                for (int j = 0; j < 2; j++) {
+                    int idx = i + j * 4;
+                    df[idx]     = out0_arr[j];
+                    df[idx + 1] = out1_arr[j];
+                    df[idx + 2] = out2_arr[j];
+                    df[idx + 3] = out3_arr[j];
+                }
+            }
+            
+            // Scalar remainder
+            for (; i < _N; i += 4) {
+                double* df2 = &df[i];
+                double x0_s = x[lut[i]];
+                double x1_s = x[lut[i + 1]];
+                double x2_s = x[lut[i + 2]];
+                double x3_s = x[lut[i + 3]];
+                
+                df2[0] = x0_s + x1_s + x2_s + x3_s;
+                df2[1] = x0_s - x1_s;
+                df2[2] = x0_s + x1_s - x2_s - x3_s;
+                df2[3] = x2_s - x3_s;
+            }
+            
+            // ================================================================
+            // Pass 3: Radix-8
+            // ================================================================
+            const double SQ2_2_d = SQ2_2;
+            
+            for (i = 0; i < _N; i += 8) {
+                double* sf2 = &sf[i];
+                double* df2 = &df[i];
+                
+                sf2[0] = df2[0] + df2[4];
+                sf2[4] = df2[0] - df2[4];
+                sf2[2] = df2[2];
+                sf2[6] = df2[6];
+                
+                double v = (df2[5] - df2[7]) * SQ2_2_d;
+                sf2[1] = df2[1] + v;
+                sf2[3] = df2[1] - v;
+                
+                v = (df2[5] + df2[7]) * SQ2_2_d;
+                sf2[5] = v + df2[3];
+                sf2[7] = v - df2[3];
+            }
+            
+            // ================================================================
+            // Passes 4+: Twiddle factor stages with FMLA/FMLS
+            // ================================================================
+            for (int pass = 3; pass < _nbr_bits; ++pass) {
+                int nbr_coef = 1 << pass;
+                int h_nbr_coef = nbr_coef >> 1;
+                int d_nbr_coef = nbr_coef << 1;
+                
+                const double* cos_ptr = _twiddle_cache->get_cos_ptr(pass);
+                const double* sin_ptr = _twiddle_cache->get_sin_ptr(pass);
+                
+                for (int idx = 0; idx < _N; idx += d_nbr_coef) {
+                    double* sf1r = sf + idx;
+                    double* sf2r = sf1r + nbr_coef;
+                    double* dfr = df + idx;
+                    double* dfi = dfr + nbr_coef;
+                    
+                    dfr[0] = sf1r[0] + sf2r[0];
+                    dfi[0] = sf1r[0] - sf2r[0];
+                    dfr[h_nbr_coef] = sf1r[h_nbr_coef];
+                    dfi[h_nbr_coef] = sf2r[h_nbr_coef];
+                    
+                    double* sf1i = &sf1r[h_nbr_coef];
+                    double* sf2i = &sf1i[nbr_coef];
+                    
+                    __builtin_prefetch(cos_ptr, 0, 3);
+                    __builtin_prefetch(sin_ptr, 0, 3);
+                    
+                    // Vectorized loop (2-wide for double)
+                    int j = 1;
+                    for (; j + 2 <= h_nbr_coef; j += 2) {
+                        if (j + 4 <= h_nbr_coef) {
+                            __builtin_prefetch(cos_ptr + j + 2, 0, 3);
+                            __builtin_prefetch(sin_ptr + j + 2, 0, 3);
+                        }
+                        
+                        float64x2_t vcos = vld1q_f64(cos_ptr + j);
+                        float64x2_t vsin = vld1q_f64(sin_ptr + j);
+                        
+                        float64x2_t sf1r_v = vld1q_f64(sf1r + j);
+                        float64x2_t sf1i_v = vld1q_f64(sf1i + j);
+                        float64x2_t sf2r_v = vld1q_f64(sf2r + j);
+                        float64x2_t sf2i_v = vld1q_f64(sf2i + j);
+                        
+                        float64x2_t dfr_pos, dfr_neg, dfi_pos, dfi_neg;
+                        butterfly_twiddle_f64x2(sf1r_v, sf1i_v, sf2r_v, sf2i_v,
+                                               vcos, vsin,
+                                               dfr_pos, dfr_neg, dfi_pos, dfi_neg);
+                        
+                        vst1q_f64(dfr + j, dfr_pos);
+                        vst1q_f64(dfi + j, dfi_pos);
+                        
+                        double dfr_neg_arr[2], dfi_neg_arr[2];
+                        vst1q_f64(dfr_neg_arr, dfr_neg);
+                        vst1q_f64(dfi_neg_arr, dfi_neg);
+                        
+                        for (int k = 0; k < 2; k++) {
+                            dfi[-(j + k)] = dfr_neg_arr[k];
+                            dfi[nbr_coef - (j + k)] = dfi_neg_arr[k];
+                        }
+                    }
+                    
+                    // Scalar remainder
+                    for (; j < h_nbr_coef; ++j) {
+                        double c = cos_ptr[j];
+                        double s = sin_ptr[j];
+                        
+                        double v = sf2r[j] * c - sf2i[j] * s;
+                        dfr[j] = sf1r[j] + v;
+                        dfi[-j] = sf1r[j] - v;
+                        
+                        v = sf2r[j] * s + sf2i[j] * c;
+                        dfi[j] = v + sf1i[j];
+                        dfi[nbr_coef - j] = v - sf1i[j];
+                    }
+                }
+                
+                double* tmp = df;
+                df = sf;
+                sf = tmp;
+            }
+        }
+        else if (_nbr_bits == 2) {
+            f[1] = x[0] - x[2];
+            f[3] = x[1] - x[3];
+            double b_0 = x[0] + x[2];
+            double b_2 = x[1] + x[3];
+            f[0] = b_0 + b_2;
+            f[2] = b_0 - b_2;
+        }
+        else if (_nbr_bits == 1) {
+            f[0] = x[0] + x[1];
+            f[1] = x[0] - x[1];
+        }
+        else {
+            f[0] = x[0];
+        }
+    }
+    
+    void do_fft_neon_d1_O(const double *_Nonnull x, double *_Nonnull f)
     {
         double c, s;
         if (likely(_nbr_bits > 2)) {
@@ -2314,7 +2867,212 @@ protected:
         }
     }
     
-    void do_ifft_neon_f1(const float *_Nonnull f, float *_Nonnull x, bool do_scale = false)
+    
+    static inline void inverse_butterfly_twiddle_f32x4(
+        float32x4_t vr, float32x4_t vi,
+        float32x4_t vcos, float32x4_t vsin,
+        float32x4_t& df2r, float32x4_t& df2i)
+    {
+        // df2r = vr*cos + vi*sin
+        df2r = vmulq_f32(vr, vcos);
+        df2r = vfmaq_f32(df2r, vi, vsin);
+        
+        // df2i = vi*cos - vr*sin
+        df2i = vmulq_f32(vi, vcos);
+        df2i = vfmsq_f32(df2i, vr, vsin);
+    }
+    
+    void do_ifft_neon_f1(const float *__restrict f, float *__restrict x, bool do_scale = false)
+    {
+        const float c2 = 2.0f;
+        float mul = do_scale ? (1.0f / static_cast<float>(_N)) : 1.0f;
+   
+        if (_nbr_bits > 2) {
+            float* sf = const_cast<float*>(f);
+            float* df;
+            float* df_temp;
+            
+            if (_nbr_bits & 1) {
+                df = buffer_ptr;
+                df_temp = x;
+            } else {
+                df = x;
+                df_temp = buffer_ptr;
+            }
+            
+            // ================================================================
+            // Inverse passes with FMLA/FMLS
+            // ================================================================
+            for (int pass = _nbr_bits - 1; pass >= 3; --pass) {
+                int nbr_coef = 1 << pass;
+                int h_nbr_coef = nbr_coef >> 1;
+                int d_nbr_coef = nbr_coef << 1;
+               
+                const float* cos_ptr = _twiddle_cache->get_cos_ptr(pass);
+                const float* sin_ptr = _twiddle_cache->get_sin_ptr(pass);
+                
+                for (int i = 0; i < _N; i += d_nbr_coef) {
+                    float* sfr = &sf[i];
+                    float* sfi = &sfr[nbr_coef];
+                    float* df1r = &df[i];
+                    float* df2r = &df1r[nbr_coef];
+                    
+                    df1r[0] = sfr[0] + sfr[nbr_coef];
+                    df2r[0] = sfr[0] - sfr[nbr_coef];
+                    df1r[h_nbr_coef] = sfr[h_nbr_coef] * c2;
+                    df2r[h_nbr_coef] = sfi[h_nbr_coef] * c2;
+                    
+                    float* df1i = &df1r[h_nbr_coef];
+                    float* df2i = &df1i[nbr_coef];
+                    
+                    __builtin_prefetch(cos_ptr, 0, 3);
+                    __builtin_prefetch(sin_ptr, 0, 3);
+                    
+                    // Vectorized loop
+                    int j = 1;
+                    for (; j + 4 <= h_nbr_coef; j += 4) {
+                        if (j + 8 <= h_nbr_coef) {
+                            __builtin_prefetch(cos_ptr + j + 4, 0, 3);
+                            __builtin_prefetch(sin_ptr + j + 4, 0, 3);
+                        }
+                        
+                        float32x4_t vcos = vld1q_f32(cos_ptr + j);
+                        float32x4_t vsin = vld1q_f32(sin_ptr + j);
+                        
+                        // Load source data with negative index handling
+                        float32x4_t sfr_v = vld1q_f32(sfr + j);
+                        float32x4_t sfi_v = vld1q_f32(sfi + j);
+                        
+                        // Gather for negative indices
+                        float sfi_neg_arr[4], sfi_conj_arr[4];
+                        for (int k = 0; k < 4; k++) {
+                            sfi_neg_arr[k] = sfi[-(j + k)];
+                            sfi_conj_arr[k] = sfi[nbr_coef - (j + k)];
+                        }
+                        float32x4_t sfi_neg_v = vld1q_f32(sfi_neg_arr);
+                        float32x4_t sfi_conj_v = vld1q_f32(sfi_conj_arr);
+                        
+                        // Compute intermediates
+                        float32x4_t df1r_v = vaddq_f32(sfr_v, sfi_neg_v);
+                        float32x4_t df1i_v = vsubq_f32(sfi_v, sfi_conj_v);
+                        
+                        float32x4_t vr = vsubq_f32(sfr_v, sfi_neg_v);
+                        float32x4_t vi = vaddq_f32(sfi_v, sfi_conj_v);
+                        
+                        // FMLA/FMLS butterfly
+                        float32x4_t df2r_v, df2i_v;
+                        inverse_butterfly_twiddle_f32x4(vr, vi, vcos, vsin, df2r_v, df2i_v);
+                        
+                        // Store
+                        vst1q_f32(df1r + j, df1r_v);
+                        vst1q_f32(df1i + j, df1i_v);
+                        vst1q_f32(df2r + j, df2r_v);
+                        vst1q_f32(df2i + j, df2i_v);
+                    }
+                    
+                    // Scalar remainder
+                    for (; j < h_nbr_coef; ++j) {
+                        df1r[j] = sfr[j] + sfi[-j];
+                        df1i[j] = sfi[j] - sfi[nbr_coef - j];
+                        
+                        float c = cos_ptr[j];
+                        float s = sin_ptr[j];
+                        
+                        float vr = sfr[j] - sfi[-j];
+                        float vi = sfi[j] + sfi[nbr_coef - j];
+                        
+                        df2r[j] = vr * c + vi * s;
+                        df2i[j] = vi * c - vr * s;
+                    }
+                }
+                
+                if (pass < _nbr_bits - 1) {
+                    float* tmp = df;
+                    df = sf;
+                    sf = tmp;
+                } else {
+                    sf = df;
+                    df = df_temp;
+                }
+            }
+            
+            // ================================================================
+            // Antepenultimate pass (radix-8 inverse)
+            // ================================================================
+            const float sq2_2 = SQ2_2;
+            
+            for (int i = 0; i < _N; i += 8) {
+                float* df2 = &df[i];
+                float* sf2 = &sf[i];
+                
+                float vr = sf2[1] - sf2[3];
+                float vi = sf2[5] + sf2[7];
+                
+                df2[0] = sf2[0] + sf2[4];
+                df2[1] = sf2[1] + sf2[3];
+                df2[2] = sf2[2] * c2;
+                df2[3] = sf2[5] - sf2[7];
+                df2[4] = sf2[0] - sf2[4];
+                df2[5] = (vr + vi) * sq2_2;
+                df2[6] = sf2[6] * c2;
+                df2[7] = (vi - vr) * sq2_2;
+            }
+            
+            // ================================================================
+            // Final passes with bit reversal and scaling
+            // ================================================================
+            const int* lut_ptr = _bit_rev_lut->get_ptr();
+            
+            float32x4_t vmul = vdupq_n_f32(mul);
+            float32x4_t vc2 = vdupq_n_f32(c2);
+            
+            for (int i = 0; i < _N; i += 8) {
+                const int* lut = lut_ptr + i;
+                float* sf2 = &df[i];
+                
+                // First 4
+                float32x4_t v0 = vld1q_f32(sf2);
+                float b_0 = vgetq_lane_f32(v0, 0) + vgetq_lane_f32(v0, 2);
+                float b_2 = vgetq_lane_f32(v0, 0) - vgetq_lane_f32(v0, 2);
+                float b_1 = vgetq_lane_f32(v0, 1) * c2;
+                float b_3 = vgetq_lane_f32(v0, 3) * c2;
+                
+                x[lut[0]] = (b_0 + b_1) * mul;
+                x[lut[1]] = (b_0 - b_1) * mul;
+                x[lut[2]] = (b_2 + b_3) * mul;
+                x[lut[3]] = (b_2 - b_3) * mul;
+                
+                // Second 4
+                float32x4_t v1 = vld1q_f32(sf2 + 4);
+                b_0 = vgetq_lane_f32(v1, 0) + vgetq_lane_f32(v1, 2);
+                b_2 = vgetq_lane_f32(v1, 0) - vgetq_lane_f32(v1, 2);
+                b_1 = vgetq_lane_f32(v1, 1) * c2;
+                b_3 = vgetq_lane_f32(v1, 3) * c2;
+                
+                x[lut[4]] = (b_0 + b_1) * mul;
+                x[lut[5]] = (b_0 - b_1) * mul;
+                x[lut[6]] = (b_2 + b_3) * mul;
+                x[lut[7]] = (b_2 - b_3) * mul;
+            }
+        }
+        else if (_nbr_bits == 2) {
+            float b_0 = f[0] + f[2];
+            float b_2 = f[0] - f[2];
+            x[0] = (b_0 + f[1] * c2) * mul;
+            x[2] = (b_0 - f[1] * c2) * mul;
+            x[1] = (b_2 + f[3] * c2) * mul;
+            x[3] = (b_2 - f[3] * c2) * mul;
+        }
+        else if (_nbr_bits == 1) {
+            x[0] = (f[0] + f[1]) * mul;
+            x[1] = (f[0] - f[1]) * mul;
+        }
+        else {
+            x[0] = f[0] * mul;
+        }
+    }
+    
+    void do_ifft_neon_f1_O(const float *_Nonnull f, float *_Nonnull x, bool do_scale = false)
     {
         const float c2 = 2.0f;
         
@@ -2540,7 +3298,196 @@ protected:
         }
     }
     
-    void do_ifft_neon_d1(const double *_Nonnull f, double *_Nonnull x, bool do_scale = false)
+    
+    static inline void inverse_butterfly_twiddle_f64x2(
+        float64x2_t vr, float64x2_t vi,
+        float64x2_t vcos, float64x2_t vsin,
+        float64x2_t& df2r, float64x2_t& df2i)
+    {
+        df2r = vmulq_f64(vr, vcos);
+        df2r = vfmaq_f64(df2r, vi, vsin);
+        
+        df2i = vmulq_f64(vi, vcos);
+        df2i = vfmsq_f64(df2i, vr, vsin);
+    }
+    
+    inline void do_ifft_neon_d1(
+        const double* __restrict f,
+        double* __restrict x,
+        bool do_scale)
+    {
+        const double c2 = 2.0;
+        double mul = do_scale ? (1.0 / double(_N)) : 1.0;
+        
+        if (_nbr_bits > 2) {
+            double* sf = (double*)f;
+            double* df;
+            double* df_temp;
+            
+            if (_nbr_bits & 1) {
+                df = buffer_ptr;
+                df_temp = x;
+            } else {
+                df = x;
+                df_temp = buffer_ptr;
+            }
+            
+            // Inverse passes with FMLA/FMLS
+            for (int pass = _nbr_bits - 1; pass >= 3; --pass) {
+                int nbr_coef = 1 << pass;
+                int h_nbr_coef = nbr_coef >> 1;
+                int d_nbr_coef = nbr_coef << 1;
+                
+                const double* cos_ptr = _twiddle_cache->get_cos_ptr(pass);
+                const double* sin_ptr = _twiddle_cache->get_sin_ptr(pass);
+                
+                for (int i = 0; i < _N; i += d_nbr_coef) {
+                    double* sfr = &sf[i];
+                    double* sfi = &sfr[nbr_coef];
+                    double* df1r = &df[i];
+                    double* df2r = &df1r[nbr_coef];
+                    
+                    df1r[0] = sfr[0] + sfr[nbr_coef];
+                    df2r[0] = sfr[0] - sfr[nbr_coef];
+                    df1r[h_nbr_coef] = sfr[h_nbr_coef] * c2;
+                    df2r[h_nbr_coef] = sfi[h_nbr_coef] * c2;
+                    
+                    double* df1i = &df1r[h_nbr_coef];
+                    double* df2i = &df1i[nbr_coef];
+                    
+                    __builtin_prefetch(cos_ptr, 0, 3);
+                    __builtin_prefetch(sin_ptr, 0, 3);
+                    
+                    // Vectorized loop (2-wide)
+                    int j = 1;
+                    for (; j + 2 <= h_nbr_coef; j += 2) {
+                        if (j + 4 <= h_nbr_coef) {
+                            __builtin_prefetch(cos_ptr + j + 2, 0, 3);
+                            __builtin_prefetch(sin_ptr + j + 2, 0, 3);
+                        }
+                        
+                        float64x2_t vcos = vld1q_f64(cos_ptr + j);
+                        float64x2_t vsin = vld1q_f64(sin_ptr + j);
+                        
+                        float64x2_t sfr_v = vld1q_f64(sfr + j);
+                        float64x2_t sfi_v = vld1q_f64(sfi + j);
+                        
+                        double sfi_neg_arr[2], sfi_conj_arr[2];
+                        for (int k = 0; k < 2; k++) {
+                            sfi_neg_arr[k] = sfi[-(j + k)];
+                            sfi_conj_arr[k] = sfi[nbr_coef - (j + k)];
+                        }
+                        float64x2_t sfi_neg_v = vld1q_f64(sfi_neg_arr);
+                        float64x2_t sfi_conj_v = vld1q_f64(sfi_conj_arr);
+                        
+                        float64x2_t df1r_v = vaddq_f64(sfr_v, sfi_neg_v);
+                        float64x2_t df1i_v = vsubq_f64(sfi_v, sfi_conj_v);
+                        
+                        float64x2_t vr = vsubq_f64(sfr_v, sfi_neg_v);
+                        float64x2_t vi = vaddq_f64(sfi_v, sfi_conj_v);
+                        
+                        float64x2_t df2r_v, df2i_v;
+                        inverse_butterfly_twiddle_f64x2(vr, vi, vcos, vsin, df2r_v, df2i_v);
+                        
+                        vst1q_f64(df1r + j, df1r_v);
+                        vst1q_f64(df1i + j, df1i_v);
+                        vst1q_f64(df2r + j, df2r_v);
+                        vst1q_f64(df2i + j, df2i_v);
+                    }
+                    
+                    // Scalar remainder
+                    for (; j < h_nbr_coef; ++j) {
+                        df1r[j] = sfr[j] + sfi[-j];
+                        df1i[j] = sfi[j] - sfi[nbr_coef - j];
+                        
+                        double c = cos_ptr[j];
+                        double s = sin_ptr[j];
+                        
+                        double vr = sfr[j] - sfi[-j];
+                        double vi = sfi[j] + sfi[nbr_coef - j];
+                        
+                        df2r[j] = vr * c + vi * s;
+                        df2i[j] = vi * c - vr * s;
+                    }
+                }
+                
+                if (pass < _nbr_bits - 1) {
+                    double* tmp = df;
+                    df = sf;
+                    sf = tmp;
+                } else {
+                    sf = df;
+                    df = df_temp;
+                }
+            }
+            
+            // Antepenultimate pass
+            const double sq2_2 = SQ2_2;
+            
+            for (int i = 0; i < _N; i += 8) {
+                double* df2 = &df[i];
+                double* sf2 = &sf[i];
+                
+                double vr = sf2[1] - sf2[3];
+                double vi = sf2[5] + sf2[7];
+                
+                df2[0] = sf2[0] + sf2[4];
+                df2[1] = sf2[1] + sf2[3];
+                df2[2] = sf2[2] * c2;
+                df2[3] = sf2[5] - sf2[7];
+                df2[4] = sf2[0] - sf2[4];
+                df2[5] = (vr + vi) * sq2_2;
+                df2[6] = sf2[6] * c2;
+                df2[7] = (vi - vr) * sq2_2;
+            }
+            
+            // Final passes with bit reversal and scaling
+            const int* lut_ptr = _bit_rev_lut->get_ptr();
+            
+            for (int i = 0; i < _N; i += 8) {
+                const int* lut = lut_ptr + i;
+                double* sf2 = &df[i];
+                
+                double b_0 = sf2[0] + sf2[2];
+                double b_2 = sf2[0] - sf2[2];
+                double b_1 = sf2[1] * c2;
+                double b_3 = sf2[3] * c2;
+                
+                x[lut[0]] = (b_0 + b_1) * mul;
+                x[lut[1]] = (b_0 - b_1) * mul;
+                x[lut[2]] = (b_2 + b_3) * mul;
+                x[lut[3]] = (b_2 - b_3) * mul;
+                
+                b_0 = sf2[4] + sf2[6];
+                b_2 = sf2[4] - sf2[6];
+                b_1 = sf2[5] * c2;
+                b_3 = sf2[7] * c2;
+                
+                x[lut[4]] = (b_0 + b_1) * mul;
+                x[lut[5]] = (b_0 - b_1) * mul;
+                x[lut[6]] = (b_2 + b_3) * mul;
+                x[lut[7]] = (b_2 - b_3) * mul;
+            }
+        }
+        else if (_nbr_bits == 2) {
+            double b_0 = f[0] + f[2];
+            double b_2 = f[0] - f[2];
+            x[0] = (b_0 + f[1] * c2) * mul;
+            x[2] = (b_0 - f[1] * c2) * mul;
+            x[1] = (b_2 + f[3] * c2) * mul;
+            x[3] = (b_2 - f[3] * c2) * mul;
+        }
+        else if (_nbr_bits == 1) {
+            x[0] = (f[0] + f[1]) * mul;
+            x[1] = (f[0] - f[1]) * mul;
+        }
+        else {
+            x[0] = f[0] * mul;
+        }
+    }
+
+    
+    void do_ifft_neon_d1_O(const double *_Nonnull f, double *_Nonnull x, bool do_scale = false)
     {
         // Initialize constants
         const double c2 = 2.0;
@@ -6650,7 +7597,7 @@ inline void do_fft_simd_f1_impl(
     T1 c, s;
     
     // Cast back to proper type - now we can access it!
-    auto twiddle_cache = static_cast<FFTReal<float>::twiddle_cache*>(twiddle_cache_ptr);
+    auto twiddle_cache = static_cast<FFTReal<float>::TwiddleCache*>(twiddle_cache_ptr);
     
     if (nbr_bits > 2) {
         float *sf, *df;
@@ -6679,15 +7626,13 @@ inline void do_fft_simd_f1_impl(
                 x3[j] = x[lut[idx + 3]];
             }
             
-            simd_float8 t0 = x0 + x2;
-            simd_float8 t1 = x1 + x3;
-            simd_float8 t2 = x0 - x2;
-            simd_float8 t3 = x1 - x3;
-            
-            simd_float8 out0 = t0 + t1;
-            simd_float8 out2 = t0 - t1;
-            simd_float8 out1 = t2;
-            simd_float8 out3 = t3;
+            simd_float8 t01 = x0 + x1;
+            simd_float8 t23 = x2 + x3;
+
+            simd_float8 out0 = t01 + t23;  // x0 + x1 + x2 + x3
+            simd_float8 out1 = x0 - x1;    // x0 - x1
+            simd_float8 out2 = t01 - t23;  // x0 + x1 - x2 - x3
+            simd_float8 out3 = x2 - x3;    // x2 - x3
             
             for (int j = 0; j < 8; j++) {
                 int idx = i + j * 4;
@@ -6801,7 +7746,7 @@ inline void do_fft_simd_d1_impl(
     using T1 = double;
     T1 c, s;
     
-    auto twiddle_cache = static_cast<FFTReal<double>::twiddle_cache*>(twiddle_cache_ptr);
+    auto twiddle_cache = static_cast<FFTReal<double>::TwiddleCache*>(twiddle_cache_ptr);
     
     if (nbr_bits > 2) {
         double *sf, *df;
@@ -6831,15 +7776,13 @@ inline void do_fft_simd_d1_impl(
                 x3[j] = x[lut[idx + 3]];
             }
             
-            simd_double4 t0 = x0 + x2;
-            simd_double4 t1 = x1 + x3;
-            simd_double4 t2 = x0 - x2;
-            simd_double4 t3 = x1 - x3;
-            
-            simd_double4 out0 = t0 + t1;
-            simd_double4 out2 = t0 - t1;
-            simd_double4 out1 = t2;
-            simd_double4 out3 = t3;
+            simd_double4 t01 = x0 + x1;
+            simd_double4 t23 = x2 + x3;
+
+            simd_double4 out0 = t01 + t23;  // x0 + x1 + x2 + x3
+            simd_double4 out1 = x0 - x1;    // x0 - x1
+            simd_double4 out2 = t01 - t23;  // x0 + x1 - x2 - x3
+            simd_double4 out3 = x2 - x3;    // x2 - x3
             
             for (int j = 0; j < 4; j++) {
                 int idx = i + j * 4;
@@ -6965,7 +7908,7 @@ inline void do_ifft_simd_f1_impl(
     float mul = 1.0f;
     if (do_scale) mul = 1.0f / static_cast<float>(N);
     
-    auto twiddle_cache = static_cast<FFTReal<float>::twiddle_cache*>(twiddle_cache_ptr);
+    auto twiddle_cache = static_cast<FFTReal<float>::TwiddleCache*>(twiddle_cache_ptr);
     
     if (nbr_bits > 2) {
         float* sf = const_cast<float*>(f);
@@ -7005,23 +7948,69 @@ inline void do_ifft_simd_f1_impl(
                 // Vectorized loop - process 8 at a time
                 int j;
                 for (j = 1; j + 8 <= h_nbr_coef; j += 8) {
-                    // Manual unrolling for 8 iterations
+                    simd_float8 vcos, vsin;
+                    simd_float8 sfr_v, sfi_v, sfi_neg_v, sfi_conj_v;
+                    
                     for (int k = 0; k < 8; k++) {
-                        int idx = j + k;
-                        df1r[idx] = sfr[idx] + sfi[-idx];
-                        df1i[idx] = sfi[idx] - sfi[nbr_coef - idx];
-                        
-                        twiddle_cache->get_twiddle(pass, idx, c, s);
-                        
-                        auto vr = sfr[idx] - sfi[-idx];
-                        auto vi = sfi[idx] + sfi[nbr_coef - idx];
-                        
-                        df2r[idx] = vr * c + vi * s;
-                        df2i[idx] = vi * c - vr * s;
+                        twiddle_cache->get_twiddle(pass, j + k, c, s);
+                        vcos[k] = c;
+                        vsin[k] = s;
+                        sfr_v[k] = sfr[j + k];
+                        sfi_v[k] = sfi[j + k];
+                        sfi_neg_v[k] = sfi[-(j + k)];
+                        sfi_conj_v[k] = sfi[nbr_coef - (j + k)];
+                    }
+                    
+                    simd_float8 df1r_v = sfr_v + sfi_neg_v;
+                    simd_float8 df1i_v = sfi_v - sfi_conj_v;
+                    
+                    simd_float8 vr = sfr_v - sfi_neg_v;
+                    simd_float8 vi = sfi_v + sfi_conj_v;
+                    
+                    simd_float8 df2r_v = vr * vcos + vi * vsin;
+                    simd_float8 df2i_v = vi * vcos - vr * vsin;
+                    
+                    for (int k = 0; k < 8; k++) {
+                        df1r[j + k] = df1r_v[k];
+                        df1i[j + k] = df1i_v[k];
+                        df2r[j + k] = df2r_v[k];
+                        df2i[j + k] = df2i_v[k];
                     }
                 }
-                
-                // Scalar remainder
+
+                // Remainder with simd_float4
+                for (; j + 4 <= h_nbr_coef; j += 4) {
+                    simd_float4 vcos, vsin;
+                    simd_float4 sfr_v, sfi_v, sfi_neg_v, sfi_conj_v;
+                    
+                    for (int k = 0; k < 4; k++) {
+                        twiddle_cache->get_twiddle(pass, j + k, c, s);
+                        vcos[k] = c;
+                        vsin[k] = s;
+                        sfr_v[k] = sfr[j + k];
+                        sfi_v[k] = sfi[j + k];
+                        sfi_neg_v[k] = sfi[-(j + k)];
+                        sfi_conj_v[k] = sfi[nbr_coef - (j + k)];
+                    }
+                    
+                    simd_float4 df1r_v = sfr_v + sfi_neg_v;
+                    simd_float4 df1i_v = sfi_v - sfi_conj_v;
+                    
+                    simd_float4 vr = sfr_v - sfi_neg_v;
+                    simd_float4 vi = sfi_v + sfi_conj_v;
+                    
+                    simd_float4 df2r_v = vr * vcos + vi * vsin;
+                    simd_float4 df2i_v = vi * vcos - vr * vsin;
+                    
+                    for (int k = 0; k < 4; k++) {
+                        df1r[j + k] = df1r_v[k];
+                        df1i[j + k] = df1i_v[k];
+                        df2r[j + k] = df2r_v[k];
+                        df2i[j + k] = df2i_v[k];
+                    }
+                }
+
+                // Final scalar remainder (at most 3 elements)
                 for (; j < h_nbr_coef; ++j) {
                     df1r[j] = sfr[j] + sfi[-j];
                     df1i[j] = sfi[j] - sfi[nbr_coef - j];
@@ -7156,12 +8145,12 @@ inline void do_ifft_simd_d1_impl(
     T1 c, s;
     const double c2 = 2.0;
     double mul = 1.0;
-    if (do_scale) mul = 1.0 / static_cast<double>(N);
+    if (do_scale) mul = 1.0 / double(N);
     
-    auto twiddle_cache = static_cast<FFTReal<double>::twiddle_cache*>(twiddle_cache_ptr);
+    auto twiddle_cache = static_cast<FFTReal<double>::TwiddleCache*>(twiddle_cache_ptr);
     
     if (nbr_bits > 2) {
-        double* sf = const_cast<double*>(f);
+        double* sf = (double*)f;
         double* df;
         double* df_temp;
         
@@ -7198,23 +8187,69 @@ inline void do_ifft_simd_d1_impl(
                 // Vectorized loop - process 4 at a time
                 int j;
                 for (j = 1; j + 4 <= h_nbr_coef; j += 4) {
-                    // Manual unrolling for 4 iterations
+                    simd_double4 vcos, vsin;
+                    simd_double4 sfr_v, sfi_v, sfi_neg_v, sfi_conj_v;
+                    
                     for (int k = 0; k < 4; k++) {
-                        int idx = j + k;
-                        df1r[idx] = sfr[idx] + sfi[-idx];
-                        df1i[idx] = sfi[idx] - sfi[nbr_coef - idx];
-                        
-                        twiddle_cache->get_twiddle(pass, idx, c, s);
-                        
-                        auto vr = sfr[idx] - sfi[-idx];
-                        auto vi = sfi[idx] + sfi[nbr_coef - idx];
-                        
-                        df2r[idx] = vr * c + vi * s;
-                        df2i[idx] = vi * c - vr * s;
+                        twiddle_cache->get_twiddle(pass, j + k, c, s);
+                        vcos[k] = c;
+                        vsin[k] = s;
+                        sfr_v[k] = sfr[j + k];
+                        sfi_v[k] = sfi[j + k];
+                        sfi_neg_v[k] = sfi[-(j + k)];
+                        sfi_conj_v[k] = sfi[nbr_coef - (j + k)];
+                    }
+                    
+                    simd_double4 df1r_v = sfr_v + sfi_neg_v;
+                    simd_double4 df1i_v = sfi_v - sfi_conj_v;
+                    
+                    simd_double4 vr = sfr_v - sfi_neg_v;
+                    simd_double4 vi = sfi_v + sfi_conj_v;
+                    
+                    simd_double4 df2r_v = vr * vcos + vi * vsin;
+                    simd_double4 df2i_v = vi * vcos - vr * vsin;
+                    
+                    for (int k = 0; k < 4; k++) {
+                        df1r[j + k] = df1r_v[k];
+                        df1i[j + k] = df1i_v[k];
+                        df2r[j + k] = df2r_v[k];
+                        df2i[j + k] = df2i_v[k];
                     }
                 }
-                
-                // Scalar remainder
+
+                // Remainder with simd_double2
+                for (; j + 2 <= h_nbr_coef; j += 2) {
+                    simd_double2 vcos, vsin;
+                    simd_double2 sfr_v, sfi_v, sfi_neg_v, sfi_conj_v;
+                    
+                    for (int k = 0; k < 2; k++) {
+                        twiddle_cache->get_twiddle(pass, j + k, c, s);
+                        vcos[k] = c;
+                        vsin[k] = s;
+                        sfr_v[k] = sfr[j + k];
+                        sfi_v[k] = sfi[j + k];
+                        sfi_neg_v[k] = sfi[-(j + k)];
+                        sfi_conj_v[k] = sfi[nbr_coef - (j + k)];
+                    }
+                    
+                    simd_double2 df1r_v = sfr_v + sfi_neg_v;
+                    simd_double2 df1i_v = sfi_v - sfi_conj_v;
+                    
+                    simd_double2 vr = sfr_v - sfi_neg_v;
+                    simd_double2 vi = sfi_v + sfi_conj_v;
+                    
+                    simd_double2 df2r_v = vr * vcos + vi * vsin;
+                    simd_double2 df2i_v = vi * vcos - vr * vsin;
+                    
+                    for (int k = 0; k < 2; k++) {
+                        df1r[j + k] = df1r_v[k];
+                        df1i[j + k] = df1i_v[k];
+                        df2r[j + k] = df2r_v[k];
+                        df2i[j + k] = df2i_v[k];
+                    }
+                }
+
+                // Final scalar remainder (at most 1 element)
                 for (; j < h_nbr_coef; ++j) {
                     df1r[j] = sfr[j] + sfi[-j];
                     df1i[j] = sfi[j] - sfi[nbr_coef - j];
@@ -7332,6 +8367,4 @@ inline void do_ifft_simd_d1_impl(
 }
 
 } // namespace fft_simd_helpers
-
-
 
