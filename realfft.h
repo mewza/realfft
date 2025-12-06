@@ -1,6 +1,6 @@
 //  realfft.h - A highly optimized C++ SIMD vector templated class
 //  ---
-//  FFTReal v1.61 (C) 2025 Dmitry Boldyrev <subband@gmail.com>
+//  FFTReal v1.62 (C) 2025 Dmitry Boldyrev <subband@gmail.com>
 //  Pascal version (C) 2024 Laurent de Soras <ldesoras@club-internet.fr>
 //  Object Pascal port (C) 2024 Frederic Vanmol <frederic@fruityloops.com>
 //
@@ -127,7 +127,6 @@ public:
     
     void real_fft(const T*_Nonnull x, cmplxT<T>*_Nonnull y, bool do_scale = false)
     {
-        
         T mul = 1.0;
         cmplxT<T> c;
         if (do_scale) {
@@ -137,34 +136,9 @@ public:
         } else {
             memcpy(xx, x, _N * sizeof(T));
         }
-        if constexpr( is_float_based ) {
-            fft_simd_helpers::do_fft_simd_f1_impl(xx, yy, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()));
-        }
-        else if constexpr( is_double_based ) {
-            fft_simd_helpers::do_fft_simd_d1_impl(xx, yy, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()));
-        } else
-#if FFT_USE_NEON
-        if constexpr( std::is_same_v<T, simd_double8> ) {
-            do_fft_neon_d8(xx, yy);
-        } else if constexpr( std::is_same_v<T, simd_float8> ) {
-            do_fft_neon_f8(xx, yy);
-        } if constexpr( std::is_same_v<T, simd_double4> ) {
-            do_fft_neon_d4(xx, yy);
-        } else if constexpr( std::is_same_v<T, simd_float4> )
-            do_fft_neon_f4(xx, yy);
-        if constexpr( std::is_same_v<T, simd_double2> ) {
-            do_fft_neon_d2(xx, yy);
-        } else if constexpr( std::is_same_v<T, simd_float2> )
-            do_fft_neon_f2(xx, yy);
-        if constexpr( std::is_same_v<T, double> ) {
-            do_fft_neon_d1(xx, yy);
-        } else if constexpr( std::is_same_v<T, float> ) {
-            do_fft_neon_f1(xx, yy);
-        } else
-#endif
-        {
-            do_fft(xx, yy);
-        }
+        
+        do_fft(xx, yy);
+        
         if (do_scale) mul *= 1./(T1)_N;
         
         y[0] = cmplxT<T>(yy[0], 0.0) * mul;           // DC
@@ -172,6 +146,37 @@ public:
             y[i] = cmplxT<T>(yy[i], yy[i + _N2]) * mul;  // Regular bins
         }
         y[_N2] = cmplxT<T>(yy[_N2], 0.0) * mul;       // ✓ Nyquist (same scaling as DC)
+    }
+    
+    inline void do_fft(const T *_Nonnull x, T *_Nonnull f) {
+        if constexpr( is_float_based ) {
+            fft_simd_helpers::do_fft_simd_f1_impl(x, f, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()));
+        }
+        else if constexpr( is_double_based ) {
+            fft_simd_helpers::do_fft_simd_d1_impl(x, f, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()));
+        } else
+#if FFT_USE_NEON
+            if constexpr( std::is_same_v<T, simd_double8> ) {
+                do_fft_neon_d8(x, f);
+            } else if constexpr( std::is_same_v<T, simd_float8> ) {
+                do_fft_neon_f8(x, f);
+            } if constexpr( std::is_same_v<T, simd_double4> ) {
+                do_fft_neon_d4(x, f);
+            } else if constexpr( std::is_same_v<T, simd_float4> )
+                do_fft_neon_f4(x, f);
+        if constexpr( std::is_same_v<T, simd_double2> ) {
+            do_fft_neon_d2(x, f);
+        } else if constexpr( std::is_same_v<T, simd_float2> )
+            do_fft_neon_f2(x, f);
+        if constexpr( std::is_same_v<T, double> ) {
+            do_fft_neon_d1(x, f);
+        } else if constexpr( std::is_same_v<T, float> ) {
+            do_fft_neon_f1(x, f);
+        } else
+#endif
+        {
+            do_fft_generic(x, f);
+        }
     }
     
     // ========================================================================== //
@@ -195,37 +200,42 @@ public:
         }
         yy[   0 ] = x[0].re;      // DC
         yy[ _N2 ] = x[_N2].re;    // ✓ Nyquist from input, not forced to 0!
+
+        do_ifft(y, yy, do_scale);
+    }
     
+    inline void do_ifft(const T *_Nonnull f, T *_Nonnull x, bool do_scale = false)
+    {
         if constexpr( is_float_based ) {
-            fft_simd_helpers::do_ifft_simd_f1_impl(yy, y, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
+            fft_simd_helpers::do_ifft_simd_f1_impl(f, x, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
         } else if constexpr( is_double_based ) {
-            fft_simd_helpers::do_ifft_simd_d1_impl(yy, y, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
+            fft_simd_helpers::do_ifft_simd_d1_impl(f, x, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
         } else
 #if FFT_USE_NEON
         if constexpr( std::is_same_v<T, simd_double8> ) {
-            do_ifft_neon_d8(yy, y, do_scale);
+            do_ifft_neon_d8(f, x, do_scale);
         } else if constexpr( std::is_same_v<T, simd_float8> ) {
-            do_ifft_neon_f8(yy, y, do_scale);
+            do_ifft_neon_f8(f, x, do_scale);
         } if constexpr( std::is_same_v<T, simd_double4> ) {
-            do_ifft_neon_d4(yy, y, do_scale);
+            do_ifft_neon_d4(f, x, do_scale);
         } else if constexpr( std::is_same_v<T, simd_float4> )
-            do_ifft_neon_f4(yy, y, do_scale);
+            do_ifft_neon_f4(f, x, do_scale);
         if constexpr( std::is_same_v<T, simd_double2> ) {
-            do_ifft_neon_d2(yy, y, do_scale);
+            do_ifft_neon_d2(f, x, do_scale);
         } else if constexpr( std::is_same_v<T, simd_float2> )
-            do_ifft_neon_f2(yy, y, do_scale);
+            do_ifft_neon_f2(f, x, do_scale);
         if constexpr( std::is_same_v<T, double> ) {
-            do_ifft_neon_d1(yy, y, do_scale);
+            do_ifft_neon_d1(f, x, do_scale);
         } else if constexpr( std::is_same_v<T, float> ) {
-            do_ifft_neon_f1(yy, y, do_scale);
+            do_ifft_neon_f1(f, x, do_scale);
         } else
 #endif
         {
-            do_ifft(yy, y, do_scale);
+            do_ifft_generic(f, x, do_scale);
         }
     }
     
-    void do_fft(const T *_Nonnull x, T *_Nonnull f) {
+    void do_fft_generic(const T *_Nonnull x, T *_Nonnull f) {
         T1 c, s;
         if (_nbr_bits > 2) {
             T *sf, *df;
@@ -354,7 +364,7 @@ public:
         }
     }
     
-    void do_ifft(const T *_Nonnull f, T *_Nonnull x, bool do_scale = false) {
+    void do_ifft_generic(const T *_Nonnull f, T *_Nonnull x, bool do_scale = false) {
         T1 c, s;
         const T1 c2 = 2.0;
         
