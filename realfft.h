@@ -1,6 +1,6 @@
 //  realfft.h - A highly optimized C++ SIMD vector templated class
 //  ---
-//  FFTReal v1.4 (C) 2025 Dmitry Boldyrev <subband@gmail.com>
+//  FFTReal v1.6 (C) 2025 Dmitry Boldyrev <subband@gmail.com>
 //  Pascal version (C) 2024 Laurent de Soras <ldesoras@club-internet.fr>
 //  Object Pascal port (C) 2024 Frederic Vanmol <frederic@fruityloops.com>
 //
