@@ -1,5 +1,5 @@
-FFTReal v1.6
-------------
+FFTReal v1.62
+-------------
 
 <b>NEW (v1.62):</b> Updated to v1.62 (fixed optimized helper functions for f1/d1), added neon and
                     vector optimizations for do_fft/do_ifft (for optimized MCLT for example)
