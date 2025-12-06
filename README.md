@@ -1,9 +1,10 @@
-FFTReal v1.65
+FFTReal v1.67
 -------------
 
-<b>NEW (v1.65):</b> Updated to v1.65 (fixed optimized helper functions for f1/d1), added neon
-                    vector optimizations for do_fft/do_ifft (for optimized MCLT for example), and finally
-                    fixed all of the do_fft_neon_* optimizaed with neon functions bugs associated with -SQ2_2
+<b>NEW (v1.67):</b> Updated to v1.65 (fixed optimized helper functions for f1/d1), added neon
+                    vector optimizations for do_fft/do_ifft (for optimized MCLT for example),
+                    fixed all of the do_fft_neon_* optimizaed with neon functions bugs associated with -SQ2_2,
+                    and fixed a stupid bug in real_ifft() do_ifft(yy, y, do_scale) yy and y were swapped places!
 
 How to reach me: 
             Dmitry Boldyrev <subband@gmail.com> or 
