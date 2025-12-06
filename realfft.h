@@ -1,6 +1,6 @@
 //  realfft.h - A highly optimized C++ SIMD vector templated class
 //  ---
-//  FFTReal v1.62 (C) 2025 Dmitry Boldyrev <subband@gmail.com>
+//  FFTReal v1.65 (C) 2025 Dmitry Boldyrev <subband@gmail.com>
 //  Pascal version (C) 2024 Laurent de Soras <ldesoras@club-internet.fr>
 //  Object Pascal port (C) 2024 Frederic Vanmol <frederic@fruityloops.com>
 //
@@ -3774,8 +3774,8 @@ protected:
             }
             
             // Third pass with SQ2_2 optimizations
-            const float32x2_t sq2_constants = {-SQ2_2, SQ2_2};
-            
+            const float32x2_t sq2_2_vec = vdup_n_f32(SQ2_2);
+
             for (auto i = 0; i < _N; i += 8) {
                 // Prefetch next block
                 if (likely(i + 8 < _N)) {
@@ -3804,13 +3804,12 @@ protected:
                 float32x2_t df5 = vld1_f32((float*)&df[i+5]);
                 float32x2_t df7 = vld1_f32((float*)&df[i+7]);
                 
-                // Calculate butterfly with optimized operations
-                // For 2-element vectors, use appropriate intrinsics
-                float32x2_t v1 = vmul_n_f32(df5, vget_lane_f32(sq2_constants, 0));
-                v1 = vmla_n_f32(v1, df7, vget_lane_f32(sq2_constants, 0));
+                // FIXED: Calculate butterfly correctly
+                // v1 = (df5 - df7) * SQ2_2
+                float32x2_t v1 = vmul_f32(vsub_f32(df5, df7), sq2_2_vec);
                 
-                float32x2_t v2 = vmul_n_f32(df5, vget_lane_f32(sq2_constants, 1));
-                v2 = vmla_n_f32(v2, df7, vget_lane_f32(sq2_constants, 1));
+                // v2 = (df5 + df7) * SQ2_2
+                float32x2_t v2 = vmul_f32(vadd_f32(df5, df7), sq2_2_vec);
                 
                 // Store final results with proper casting
                 vst1_f32((float*)&sf[i+1], vadd_f32(df1, v1));
@@ -3974,9 +3973,9 @@ protected:
             }
             
             // Third pass with SQ2_2 optimization
-            const float64x1_t neg_sq2_2 = vdup_n_f64(-SQ2_2);
-            const float64x1_t pos_sq2_2 = vdup_n_f64(SQ2_2);
-            
+            // Third pass with SQ2_2 optimization
+            const float64x2_t sq2_2_vec = vdupq_n_f64(SQ2_2);
+
             for (auto i = 0; i < _N; i += 8) {
                 // Prefetch next block
                 if (likely(i + 8 < _N)) {
@@ -4009,17 +4008,11 @@ protected:
                 float64x2_t df5 = vld1q_f64(df_ptr + 10);
                 float64x2_t df7 = vld1q_f64(df_ptr + 14);
                 
-                // Calculate v1 with scalar multiplication
-                float64x2_t neg_sq2_2_vec = vdupq_n_f64(vget_lane_f64(neg_sq2_2, 0));
-                float64x2_t v1 = vmulq_f64(df5, neg_sq2_2_vec);
-                float64x2_t df7_scaled = vmulq_f64(df7, neg_sq2_2_vec);
-                v1 = vaddq_f64(v1, df7_scaled);
+                // FIXED: v1 = (df5 - df7) * SQ2_2
+                float64x2_t v1 = vmulq_f64(vsubq_f64(df5, df7), sq2_2_vec);
                 
-                // Calculate v2 with scalar multiplication
-                float64x2_t pos_sq2_2_vec = vdupq_n_f64(vget_lane_f64(pos_sq2_2, 0));
-                float64x2_t v2 = vmulq_f64(df5, pos_sq2_2_vec);
-                float64x2_t df7_scaled2 = vmulq_f64(df7, pos_sq2_2_vec);
-                v2 = vaddq_f64(v2, df7_scaled2);
+                // FIXED: v2 = (df5 + df7) * SQ2_2
+                float64x2_t v2 = vmulq_f64(vaddq_f64(df5, df7), sq2_2_vec);
                 
                 // Store final results
                 vst1q_f64(sf_ptr + 2,  vaddq_f64(df1, v1));
@@ -4202,8 +4195,9 @@ protected:
             }
             
             // Third pass with SQ2_2 optimizations
-            static const float32x2_t sq2_constants = {-SQ2_2, SQ2_2};
-            
+            // Third pass with SQ2_2 optimizations
+            const float32x4_t sq2_2_vec = vdupq_n_f32(SQ2_2);
+
             for (auto i = 0; i < _N; i += 8) {
                 // Prefetch next block
                 if (likely(i + 8 < _N)) {
@@ -4232,16 +4226,11 @@ protected:
                 float32x4_t df5 = vld1q_f32((float*)&df[i+5]);
                 float32x4_t df7 = vld1q_f32((float*)&df[i+7]);
                 
-                // Calculate butterfly with FMA operations
-                float32x4_t v1 = vfmaq_lane_f32(
-                                                vfmaq_lane_f32(vdupq_n_f32(0.0f), df5, sq2_constants, 0),
-                                                df7, sq2_constants, 0
-                                                );
+                // FIXED: v1 = (df5 - df7) * SQ2_2
+                float32x4_t v1 = vmulq_f32(vsubq_f32(df5, df7), sq2_2_vec);
                 
-                float32x4_t v2 = vfmaq_lane_f32(
-                                                vfmaq_lane_f32(vdupq_n_f32(0.0f), df5, sq2_constants, 1),
-                                                df7, sq2_constants, 1
-                                                );
+                // FIXED: v2 = (df5 + df7) * SQ2_2
+                float32x4_t v2 = vmulq_f32(vaddq_f32(df5, df7), sq2_2_vec);
                 
                 // Store final results with proper casting
                 vst1q_f32((float*)&sf[i+1], vaddq_f32(df1, v1));
@@ -4425,9 +4414,9 @@ protected:
             }
             
             // Third pass with optimized SQ2_2 calculations
-            const float64x1_t neg_sq2_2 = vdup_n_f64(-SQ2_2);
-            const float64x1_t pos_sq2_2 = vdup_n_f64(SQ2_2);
-            
+            // Third pass with optimized SQ2_2 calculations
+            const float64x2_t sq2_2_vec = vdupq_n_f64(SQ2_2);
+
             for (auto i = 0; i < _N; i += 8) {
                 auto sf2 = &sf[i];
                 auto df2 = &df[i];
@@ -4477,27 +4466,13 @@ protected:
                 float64x2_t df7_low = vld1q_f64(df_ptr + 28);
                 float64x2_t df7_high = vld1q_f64(df_ptr + 30);
                 
-                // Calculate v1 with proper operations for doubles
-                float64x2_t v1_low = vmulq_lane_f64(df5_low, neg_sq2_2, 0);
-                float64x2_t v1_high = vmulq_lane_f64(df5_high, neg_sq2_2, 0);
+                // FIXED: v1 = (df5 - df7) * SQ2_2
+                float64x2_t v1_low = vmulq_f64(vsubq_f64(df5_low, df7_low), sq2_2_vec);
+                float64x2_t v1_high = vmulq_f64(vsubq_f64(df5_high, df7_high), sq2_2_vec);
                 
-                // Create a vector with the scalar value in both lanes
-                float64x2_t neg_sq2_2_vec = vdupq_n_f64(vget_lane_f64(neg_sq2_2, 0));
-                
-                // Multiply and add separately
-                float64x2_t df7_low_scaled = vmulq_f64(df7_low, neg_sq2_2_vec);
-                float64x2_t df7_high_scaled = vmulq_f64(df7_high, neg_sq2_2_vec);
-                v1_low = vaddq_f64(v1_low, df7_low_scaled);
-                v1_high = vaddq_f64(v1_high, df7_high_scaled);
-                
-                // Calculate v2 - similar pattern as v1
-                float64x2_t v2_low = vmulq_lane_f64(df5_low, pos_sq2_2, 0);
-                float64x2_t v2_high = vmulq_lane_f64(df5_high, pos_sq2_2, 0);
-                float64x2_t pos_sq2_2_vec = vdupq_n_f64(vget_lane_f64(pos_sq2_2, 0));
-                float64x2_t df7_low_scaled2 = vmulq_f64(df7_low, pos_sq2_2_vec);
-                float64x2_t df7_high_scaled2 = vmulq_f64(df7_high, pos_sq2_2_vec);
-                v2_low = vaddq_f64(v2_low, df7_low_scaled2);
-                v2_high = vaddq_f64(v2_high, df7_high_scaled2);
+                // FIXED: v2 = (df5 + df7) * SQ2_2
+                float64x2_t v2_low = vmulq_f64(vaddq_f64(df5_low, df7_low), sq2_2_vec);
+                float64x2_t v2_high = vmulq_f64(vaddq_f64(df5_high, df7_high), sq2_2_vec);
                 
                 // Store final results
                 vst1q_f64(sf_ptr + 4,  vaddq_f64(df1_low, v1_low));
@@ -4730,7 +4705,6 @@ protected:
             }
             
             // Third pass with software pipelining
-            static const float32x2_t sq2_constants = {-SQ2_2, SQ2_2};
             
             // Preload first block
             auto df_first = &df[0];
@@ -4797,15 +4771,15 @@ protected:
                 float32x4_t df7_high = vld1q_f32(&df2[7].f[4]);
                 
                 // Optimized butterfly with lane-specific FMA
-                float32x4_t v1_low = vfmaq_lane_f32(vfmaq_lane_f32(vdupq_n_f32(0), df5_low, sq2_constants, 0),
-                                                    df7_low, sq2_constants, 0);
-                float32x4_t v1_high = vfmaq_lane_f32(vfmaq_lane_f32(vdupq_n_f32(0), df5_high, sq2_constants, 0),
-                                                     df7_high, sq2_constants, 0);
-                
-                float32x4_t v2_low = vfmaq_lane_f32(vfmaq_lane_f32(vdupq_n_f32(0), df5_low, sq2_constants, 1),
-                                                    df7_low, sq2_constants, 1);
-                float32x4_t v2_high = vfmaq_lane_f32(vfmaq_lane_f32(vdupq_n_f32(0), df5_high, sq2_constants, 1),
-                                                     df7_high, sq2_constants, 1);
+                const float32x4_t sq2_2_vec = vdupq_n_f32(SQ2_2);
+
+                // v1 = (df5 - df7) * SQ2_2
+                float32x4_t v1_low = vmulq_f32(vsubq_f32(df5_low, df7_low), sq2_2_vec);
+                float32x4_t v1_high = vmulq_f32(vsubq_f32(df5_high, df7_high), sq2_2_vec);
+
+                // v2 = (df5 + df7) * SQ2_2
+                float32x4_t v2_low = vmulq_f32(vaddq_f32(df5_low, df7_low), sq2_2_vec);
+                float32x4_t v2_high = vmulq_f32(vaddq_f32(df5_high, df7_high), sq2_2_vec);
                 
                 // Final stores
                 vst1q_f32(&sf2[1].f[0], vaddq_f32(df1_low, v1_low));
@@ -5015,17 +4989,15 @@ protected:
             }
             
             // Third pass with software pipelining
-            // Precomputed constants
-            const float64x1_t neg_sq2_2 = vdup_n_f64(-SQ2_2);
-            const float64x1_t pos_sq2_2 = vdup_n_f64(SQ2_2);
-            
+            const float64x2_t sq2_2_vec = vdupq_n_f64(SQ2_2);
+
             // Preload first data block
             auto df_first = &df[0];
             float64x2_t df0_low_next = vld1q_f64(&df_first[0].f[0]);
             float64x2_t df0_high_next = vld1q_f64(&df_first[0].f[2]);
             float64x2_t df4_low_next = vld1q_f64(&df_first[4].f[0]);
             float64x2_t df4_high_next = vld1q_f64(&df_first[4].f[2]);
-            
+
             for (auto i = 0; i < _N; i += 8) {
                 auto sf2 = &sf[i];
                 auto df2 = &df[i];
@@ -5080,12 +5052,13 @@ protected:
                 vst1q_f64(&sf2[6].f[0], df6val_low);
                 vst1q_f64(&sf2[6].f[2], df6val_high);
                 
-                // Optimized FMA operations for double precision
-                float64x2_t v1_low = vfmaq_lane_f64(vfmaq_lane_f64(vdupq_n_f64(0), df5_low, neg_sq2_2, 0), df7_low, neg_sq2_2, 0);
-                float64x2_t v1_high = vfmaq_lane_f64(vfmaq_lane_f64(vdupq_n_f64(0), df5_high, neg_sq2_2, 0), df7_high, neg_sq2_2, 0);
+                // FIXED: v1 = (df5 - df7) * SQ2_2
+                float64x2_t v1_low = vmulq_f64(vsubq_f64(df5_low, df7_low), sq2_2_vec);
+                float64x2_t v1_high = vmulq_f64(vsubq_f64(df5_high, df7_high), sq2_2_vec);
                 
-                float64x2_t v2_low = vfmaq_lane_f64(vfmaq_lane_f64(vdupq_n_f64(0), df5_low, pos_sq2_2, 0), df7_low, pos_sq2_2, 0);
-                float64x2_t v2_high = vfmaq_lane_f64(vfmaq_lane_f64(vdupq_n_f64(0), df5_high, pos_sq2_2, 0), df7_high, pos_sq2_2, 0);
+                // FIXED: v2 = (df5 + df7) * SQ2_2
+                float64x2_t v2_low = vmulq_f64(vaddq_f64(df5_low, df7_low), sq2_2_vec);
+                float64x2_t v2_high = vmulq_f64(vaddq_f64(df5_high, df7_high), sq2_2_vec);
                 
                 // Final stores
                 vst1q_f64(&sf2[1].f[0], vaddq_f64(df1_low, v1_low));
