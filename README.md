@@ -1,8 +1,9 @@
-FFTReal v1.62
+FFTReal v1.65
 -------------
 
-<b>NEW (v1.62):</b> Updated to v1.62 (fixed optimized helper functions for f1/d1), added neon and
-                    vector optimizations for do_fft/do_ifft (for optimized MCLT for example)
+<b>NEW (v1.65):</b> Updated to v1.65 (fixed optimized helper functions for f1/d1), added neon
+                    vector optimizations for do_fft/do_ifft (for optimized MCLT for example), and finally
+                    fixed all of the do_fft_neon_* optimizaed with neon functions bugs associated with -SQ2_2
 
 How to reach me: 
             Dmitry Boldyrev <subband@gmail.com> or 
