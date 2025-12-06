@@ -1,6 +1,6 @@
 //  realfft.h - A highly optimized C++ SIMD vector templated class
 //  ---
-//  FFTReal v1.6 (C) 2025 Dmitry Boldyrev <subband@gmail.com>
+//  FFTReal v1.61 (C) 2025 Dmitry Boldyrev <subband@gmail.com>
 //  Pascal version (C) 2024 Laurent de Soras <ldesoras@club-internet.fr>
 //  Object Pascal port (C) 2024 Frederic Vanmol <frederic@fruityloops.com>
 //
@@ -11,7 +11,7 @@
 #include <TargetConditionals.h>
 #endif
 #include <memory>
-#include "const1.h"
+#include <mss/const1.h>
 
 #if !TARGET_OS_MACCATALYST && TARGET_CPU_ARM64 && defined(__ARM_NEON)
 #include <simd/simd.h>
@@ -146,9 +146,9 @@ public:
 #if FFT_USE_NEON
         if constexpr( std::is_same_v<T, simd_double8> ) {
             do_fft_neon_d8(xx, yy);
-        } else if constexpr( std::is_same_v<T, simd_float8> )
+        } else if constexpr( std::is_same_v<T, simd_float8> ) {
             do_fft_neon_f8(xx, yy);
-        if constexpr( std::is_same_v<T, simd_double4> ) {
+        } if constexpr( std::is_same_v<T, simd_double4> ) {
             do_fft_neon_d4(xx, yy);
         } else if constexpr( std::is_same_v<T, simd_float4> )
             do_fft_neon_f4(xx, yy);
@@ -196,17 +196,17 @@ public:
         yy[   0 ] = x[0].re;      // DC
         yy[ _N2 ] = x[_N2].re;    // ✓ Nyquist from input, not forced to 0!
     
-       /* if constexpr( is_float_based ) {
+        if constexpr( is_float_based ) {
             fft_simd_helpers::do_ifft_simd_f1_impl(yy, y, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
         } else if constexpr( is_double_based ) {
             fft_simd_helpers::do_ifft_simd_d1_impl(yy, y, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
-        } else */
+        } else
 #if FFT_USE_NEON
         if constexpr( std::is_same_v<T, simd_double8> ) {
             do_ifft_neon_d8(yy, y, do_scale);
-        } else if constexpr( std::is_same_v<T, simd_float8> )
+        } else if constexpr( std::is_same_v<T, simd_float8> ) {
             do_ifft_neon_f8(yy, y, do_scale);
-        if constexpr( std::is_same_v<T, simd_double4> ) {
+        } if constexpr( std::is_same_v<T, simd_double4> ) {
             do_ifft_neon_d4(yy, y, do_scale);
         } else if constexpr( std::is_same_v<T, simd_float4> )
             do_ifft_neon_f4(yy, y, do_scale);
