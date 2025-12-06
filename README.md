@@ -1,7 +1,7 @@
-FFTReal v1.5
+FFTReal v1.6
 ------------
 
-<b>NEW (v1.5):</b> Added acceleration using simd_float8 and simd_double4 types for the corresponding scalars float and double.
+<b>NEW (v1.6):</b> Updated to v1.6 (fixed optimized helper functions for f1/d1).
 
 How to reach me: 
             Dmitry Boldyrev <subband@gmail.com> or 
