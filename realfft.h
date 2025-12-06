@@ -1,6 +1,6 @@
 //  realfft.h - A highly optimized C++ SIMD vector templated class
 //  ---
-//  FFTReal v1.65 (C) 2025 Dmitry Boldyrev <subband@gmail.com>
+//  FFTReal v1.67 (C) 2025 Dmitry Boldyrev <subband@gmail.com>
 //  Pascal version (C) 2024 Laurent de Soras <ldesoras@club-internet.fr>
 //  Object Pascal port (C) 2024 Frederic Vanmol <frederic@fruityloops.com>
 //
@@ -201,7 +201,7 @@ public:
         yy[   0 ] = x[0].re;      // DC
         yy[ _N2 ] = x[_N2].re;    // ✓ Nyquist from input, not forced to 0!
 
-        do_ifft(y, yy, do_scale);
+        do_ifft(yy, y, do_scale);
     }
     
     inline void do_ifft(const T *_Nonnull f, T *_Nonnull x, bool do_scale = false)
