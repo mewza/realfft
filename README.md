@@ -1,7 +1,8 @@
 FFTReal v1.6
 ------------
 
-<b>NEW (v1.6):</b> Updated to v1.6 (fixed optimized helper functions for f1/d1).
+<b>NEW (v1.62):</b> Updated to v1.62 (fixed optimized helper functions for f1/d1), added neon and
+                    vector optimizations for do_fft/do_ifft (for optimized MCLT for example)
 
 How to reach me: 
             Dmitry Boldyrev <subband@gmail.com> or 
