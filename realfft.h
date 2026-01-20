@@ -1,17 +1,33 @@
-//  realfft.h - A highly optimized C++ SIMD vector templated class
-//  ---
-//  FFTReal v1.67 (C) 2025 Dmitry Boldyrev <subband@gmail.com>
-//  Pascal version (C) 2024 Laurent de Soras <ldesoras@club-internet.fr>
-//  Object Pascal port (C) 2024 Frederic Vanmol <frederic@fruityloops.com>
-//
+/*-----------------------------------------------------------------------------*\
+**   FFTReal v2.1 -- Real/Complex Forward and Inverse Fast Fourier Transform   **
+**   (c) 2021-2025 Dmitry Boldyrev. All rights reserved.                       **
+**                                                                             **
+**   fftreal.h - Main include header                                           **
+**                                                                             **
+**   FFT/MCLT Bundle v2.0 -- PRIVATE EDITION -- DO NOT DISTRIBUTE --           **
+**                                                                             **
+**    Features include:                                                        **
+**        - Advanced intrinsics NEON optimizations                             **
+**        - Arbitrary size and unique_ptr style allocation                     **
+**        - Complex and Real forward / inverse transforms                      **
+**        - Packed and ifnterleaved functions (do_fft, do_fft_complex)          **
+**        - SIMD vector and scalar support (float, double, simd_float8, etc)   **
+**        - 1/N scaling in real_ifft(..., true);                               **
+**        - float/double scalars accelerations with SIMD vectorization         **
+**        - Very small signal round-trip error                                 **
+**                                                                             **
+**    @contact  E-mail: subband@gmail.com or subband@protonmail.com            **
+**    @home https://github.com/mewza/realfft/                                  **
+**                                                                             *
+\*-----------------------------------------------------------------------------*/
 
 #pragma once
 
 #ifdef __APPLE__
 #include <TargetConditionals.h>
-#endif
-#include <memory>
+#endif 
 #include "const1.h"
+#include <memory>
 
 #if !TARGET_OS_MACCATALYST && TARGET_CPU_ARM64 && defined(__ARM_NEON)
 #include <simd/simd.h>
@@ -21,7 +37,7 @@
 #define NEW_NEON_OPT 1
 
 #pragma warning("Compiling with NEON optimizations")
-#endif // TARGET_OS_MACCATALYST
+#endif // !TARGET_OS_MACCATALYST && TARGET_CPU_ARM64 && defined(__ARM_NEON)
 
 namespace fft_simd_helpers {
 
@@ -33,13 +49,13 @@ void do_fft_simd_d1_impl(const double* x, double* f, int N, int nbr_bits,
                        const int* bit_rev_lut, double* buffer_ptr,
                        void* twiddle_cache_ptr);
 
-void do_ifft_simd_d1_impl(const double* _Nonnull f, double* _Nonnull x, int N,
+void do_ifft_simd_d1_impl(double* _Nonnull f, double* _Nonnull x, int N,
                         int nbr_bits, const int* _Nonnull bit_rev_lut,
                         double* _Nonnull buffer_ptr,
                         void* _Nonnull twiddle_cache_ptr,
                         bool do_scale);
 
-void do_ifft_simd_f1_impl(const float* _Nonnull f, float* _Nonnull x, int N,
+void do_ifft_simd_f1_impl(float* _Nonnull f, float* _Nonnull x, int N,
                         int nbr_bits, const int* _Nonnull bit_rev_lut,
                         float* _Nonnull buffer_ptr,
                         void* _Nonnull twiddle_cache_ptr,
@@ -51,6 +67,7 @@ template <typename T>
 class FFTReal
 {
     using T1 = SimdBase<T>;
+    using cmplxTT = cmplxT<T>;
     
     int _nbr_bits = 0;
     int _N2 = 0;
@@ -66,23 +83,8 @@ protected:
     T*_Nullable yy = nullptr;
     T*_Nullable xx = nullptr;
     
-    static constexpr bool is_simd_vector = std::is_same_v<T, simd_float8> ||
-                                   std::is_same_v<T, simd_float4> ||
-                                   std::is_same_v<T, simd_float2> ||
-                                   std::is_same_v<T, simd_double8> ||
-                                   std::is_same_v<T, simd_double4> ||
-                                   std::is_same_v<T, simd_double2>;
-
-    static constexpr bool is_float_based = std::is_arithmetic_v<T>
-        ? (sizeof(T) == sizeof(float))
-        : (sizeof(T) == sizeof(float) && !is_simd_vector);
-
-    static constexpr bool is_double_based = std::is_arithmetic_v<T>
-        ? (sizeof(T) == sizeof(double))
-        : (sizeof(T) == sizeof(double) && !is_simd_vector);
-        
 public:
-    FFTReal(const int n) :
+    FFTReal(int n) :
     _N(n),
     _N2(n/2),
     _nbr_bits(floorlog2(n))
@@ -125,10 +127,10 @@ public:
     //             in [0...N(x)] = interleaved format R0,I0,R1,I1,R2,I2,          //
     // ========================================================================== //
     
-    void real_fft(const T*_Nonnull x, cmplxT<T>*_Nonnull y, bool do_scale = false)
+    void real_fft(const T*_Nonnull x, cmplxTT*_Nonnull y, bool do_scale = false)
     {
         T mul = 1.0;
-        cmplxT<T> c;
+        cmplxTT c;
         if (do_scale) {
             for (int i = 0; i < _N; i++) {
                 xx[i] = x[i] * 0.5;
@@ -136,47 +138,41 @@ public:
         } else {
             memcpy(xx, x, _N * sizeof(T));
         }
-        
-        do_fft(xx, yy);
-        
-        if (do_scale) mul *= 1./(T1)_N;
-        
-        y[0] = cmplxT<T>(yy[0], 0.0) * mul;           // DC
-        for (int i = 1; i < _N2; i++) {
-            y[i] = cmplxT<T>(yy[i], yy[i + _N2]) * mul;  // Regular bins
+        if constexpr( std::is_same_v<T, float> ) {
+            fft_simd_helpers::do_fft_simd_f1_impl(xx, yy, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()));
         }
-        y[_N2] = cmplxT<T>(yy[_N2], 0.0) * mul;       // ✓ Nyquist (same scaling as DC)
-    }
-    
-    inline void do_fft(const T *_Nonnull x, T *_Nonnull f) {
-        if constexpr( is_float_based ) {
-            fft_simd_helpers::do_fft_simd_f1_impl(x, f, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()));
-        }
-        else if constexpr( is_double_based ) {
-            fft_simd_helpers::do_fft_simd_d1_impl(x, f, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()));
+        else if constexpr( std::is_same_v<T, double> ) {
+            fft_simd_helpers::do_fft_simd_d1_impl(xx, yy, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()));
         } else
 #if FFT_USE_NEON
-            if constexpr( std::is_same_v<T, simd_double8> ) {
-                do_fft_neon_d8(x, f);
-            } else if constexpr( std::is_same_v<T, simd_float8> ) {
-                do_fft_neon_f8(x, f);
-            } if constexpr( std::is_same_v<T, simd_double4> ) {
-                do_fft_neon_d4(x, f);
-            } else if constexpr( std::is_same_v<T, simd_float4> )
-                do_fft_neon_f4(x, f);
+        if constexpr( std::is_same_v<T, simd_double8> ) {
+            do_fft_neon_d8(xx, yy);
+        } else if constexpr( std::is_same_v<T, simd_float8> )
+            do_fft_neon_f8(xx, yy);
+        if constexpr( std::is_same_v<T, simd_double4> ) {
+            do_fft_neon_d4(xx, yy);
+        } else if constexpr( std::is_same_v<T, simd_float4> )
+            do_fft_neon_f4(xx, yy);
         if constexpr( std::is_same_v<T, simd_double2> ) {
-            do_fft_neon_d2(x, f);
+            do_fft_neon_d2(xx, yy);
         } else if constexpr( std::is_same_v<T, simd_float2> )
-            do_fft_neon_f2(x, f);
+            do_fft_neon_f2(xx, yy);
         if constexpr( std::is_same_v<T, double> ) {
-            do_fft_neon_d1(x, f);
+            do_fft_neon_d1(xx, yy);
         } else if constexpr( std::is_same_v<T, float> ) {
-            do_fft_neon_f1(x, f);
+            do_fft_neon_f1(xx, yy);
         } else
 #endif
         {
-            do_fft_generic(x, f);
+            do_fft(xx, yy);
         }
+        if (do_scale) mul *= 1./(T1)_N;
+        
+        y[0] = cmplxTT(yy[0], 0.0) * mul;           // DC
+        for (int i = 1; i < _N2; i++) {
+            y[i] = cmplxTT(yy[i], yy[i + _N2]) * mul;  // Regular bins
+        }
+        y[_N2] = cmplxTT(yy[_N2], 0.0) * mul;       // ✓ Nyquist (same scaling as DC)
     }
     
     // ========================================================================== //
@@ -192,7 +188,7 @@ public:
     //        - x: pointer on the destination array (time).                       //
     // ========================================================================== //
     
-    void real_ifft(const cmplxT<T>*_Nonnull x, T*_Nonnull y, bool do_scale = false)
+    void real_ifft(const cmplxTT*_Nonnull x, T*_Nonnull y, bool do_scale = false)
     {
         for (int i=1; i < _N2; i++) {
             yy[ i       ] = x[i].re;
@@ -200,42 +196,99 @@ public:
         }
         yy[   0 ] = x[0].re;      // DC
         yy[ _N2 ] = x[_N2].re;    // ✓ Nyquist from input, not forced to 0!
-
-        do_ifft(yy, y, do_scale);
-    }
     
-    inline void do_ifft(const T *_Nonnull f, T *_Nonnull x, bool do_scale = false)
-    {
-        if constexpr( is_float_based ) {
-            fft_simd_helpers::do_ifft_simd_f1_impl(f, x, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
-        } else if constexpr( is_double_based ) {
-            fft_simd_helpers::do_ifft_simd_d1_impl(f, x, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
+        if constexpr( std::is_same_v<T, float> ) {
+            fft_simd_helpers::do_ifft_simd_f1_impl(yy, y, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
+        } else if constexpr( std::is_same_v<T, double> ) {
+            fft_simd_helpers::do_ifft_simd_d1_impl(yy, y, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
         } else
 #if FFT_USE_NEON
         if constexpr( std::is_same_v<T, simd_double8> ) {
-            do_ifft_neon_d8(f, x, do_scale);
-        } else if constexpr( std::is_same_v<T, simd_float8> ) {
-            do_ifft_neon_f8(f, x, do_scale);
-        } if constexpr( std::is_same_v<T, simd_double4> ) {
-            do_ifft_neon_d4(f, x, do_scale);
+            do_ifft_neon_d8(yy, y, do_scale);
+        } else if constexpr( std::is_same_v<T, simd_float8> )
+            do_ifft_neon_f8(yy, y, do_scale);
+        if constexpr( std::is_same_v<T, simd_double4> ) {
+            do_ifft_neon_d4(yy, y, do_scale);
         } else if constexpr( std::is_same_v<T, simd_float4> )
-            do_ifft_neon_f4(f, x, do_scale);
+            do_ifft_neon_f4(yy, y, do_scale);
         if constexpr( std::is_same_v<T, simd_double2> ) {
-            do_ifft_neon_d2(f, x, do_scale);
+            do_ifft_neon_d2(yy, y, do_scale);
         } else if constexpr( std::is_same_v<T, simd_float2> )
-            do_ifft_neon_f2(f, x, do_scale);
+            do_ifft_neon_f2(yy, y, do_scale);
         if constexpr( std::is_same_v<T, double> ) {
-            do_ifft_neon_d1(f, x, do_scale);
+            do_ifft_neon_d1(yy, y, do_scale);
         } else if constexpr( std::is_same_v<T, float> ) {
-            do_ifft_neon_f1(f, x, do_scale);
+            do_ifft_neon_f1(yy, y, do_scale);
         } else
 #endif
         {
-            do_ifft_generic(f, x, do_scale);
+            do_ifft(yy, y, do_scale);
         }
     }
     
-    void do_fft_generic(const T *_Nonnull x, T *_Nonnull f) {
+    // Complex FFT of N points using two N-point real FFTs
+    // Input/output: data[2*N] interleaved as [re0,im0,re1,im1,...]
+    void do_fft_complex(cmplxTT* __restrict__ data, T* __restrict__ temp_buffer) {
+        const int N = _N;
+        const int N2 = N / 2;
+        
+        // Conjugate input to fix sign convention
+        for (int n = 0; n < N; n++) {
+            data[n] = data[n].conj();
+        }
+        
+        T* x_re = temp_buffer;
+        T* x_im = temp_buffer + N;
+        T* X_re = temp_buffer + 2*N;
+        T* X_im = temp_buffer + 3*N;
+        
+        // Deinterleave
+        for (int n = 0; n < N; n++) {
+            x_re[n] = data[n].re;
+            x_im[n] = data[n].im;
+        }
+        
+        // Two N-point real FFTs
+        do_fft(x_re, X_re);
+        do_fft(x_im, X_im);
+        
+        // Combine
+        for (int k = 0; k < N; k++) {
+            T Xr_re, Xr_im, Xi_re, Xi_im;
+            
+            if (k == 0) {
+                Xr_re = X_re[0]; Xr_im = 0;
+                Xi_re = X_im[0]; Xi_im = 0;
+            } else if (k == N2) {
+                Xr_re = X_re[N2]; Xr_im = 0;
+                Xi_re = X_im[N2]; Xi_im = 0;
+            } else if (k < N2) {
+                Xr_re = X_re[k];  Xr_im = X_re[N2 + k];
+                Xi_re = X_im[k];  Xi_im = X_im[N2 + k];
+            } else {
+                int kk = N - k;
+                Xr_re = X_re[kk];  Xr_im = -X_re[N2 + kk];
+                Xi_re = X_im[kk];  Xi_im = -X_im[N2 + kk];
+            }
+            
+            data[k].re = Xr_re - Xi_im;
+            data[k].im = Xr_im + Xi_re;
+        }
+        
+        // Conjugate output to fix sign convention
+        for (int k = 0; k < N; k++) {
+            data[k] = data[k].conj();
+        }
+    }
+    
+    // Convenience overloads for interleaved T*
+    void do_fft_complex(T* __restrict__ data, T* __restrict__ temp_buffer) {
+        do_fft_complex(reinterpret_cast<cmplxTT*>(data), temp_buffer);
+    }
+
+    
+    // Forward real FFT
+    void do_fft(const T *_Nonnull x, T *_Nonnull f) {
         T1 c, s;
         if (_nbr_bits > 2) {
             T *sf, *df;
@@ -362,9 +415,36 @@ public:
         else {
             f[0] = x[0];
         }
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
     
-    void do_ifft_generic(const T *_Nonnull f, T *_Nonnull x, bool do_scale = false) {
+    
+    // Inverse complex FFT
+    void do_ifft_complex(cmplxTT* __restrict__ data, T* __restrict__ temp_buffer) {
+        const int N = _N;
+        const T1 scale = T1(1.0) / T1(N);
+        
+        // IFFT(X) = conj(FFT(conj(X))) / N
+        
+        // Step 1: Conjugate input
+        for (int n = 0; n < N; n++) {
+            data[n] = data[n].conj();
+        }
+        
+        // Step 2: Forward FFT
+        do_fft_complex(data, temp_buffer);
+        
+        // Step 3: Conjugate output and scale
+        for (int n = 0; n < N; n++) {
+            data[n] = data[n].conj() * scale;
+        }
+    }
+    void do_ifft_complex(T* __restrict__ data, T* __restrict__ temp_buffer) {
+        do_ifft_complex(reinterpret_cast<cmplxTT*>(data), temp_buffer);
+    }
+    
+    // Inverse Real FFT
+    void do_ifft(T *_Nonnull f, T *_Nonnull x, bool do_scale = false) {
         T1 c, s;
         const T1 c2 = 2.0;
         
@@ -372,6 +452,8 @@ public:
         if (do_scale) mul *= 1./(T1)_N;
         
         //  General case
+        
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
         
         if (_nbr_bits > 2)
         {
@@ -519,6 +601,7 @@ public:
         else {
             x[0] = f[0] * mul;
         }
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
     
     FFTReal(FFTReal&& other) noexcept :
@@ -575,9 +658,9 @@ public:
         return _N;
     }
     
-    inline void do_rescale(cmplxT<T> *_Nonnull x) const {
+    inline void do_rescale(cmplxTT *_Nonnull x) const {
         const T mul = 1./(T1)_N;
-        x[0] = cmplxT<T>(x[0].re, 0.0) * mul;
+        x[0] = cmplxTT(x[0].re, 0.0) * mul;
         for (auto i = 1; i < _N2; ++i)
             x[i] *= mul;
     }
@@ -716,6 +799,94 @@ public:
         
     };
     
+    /*
+    class twiddle_cache {
+    protected:
+        T1*_Nullable*_Nullable cos_data = nullptr;
+        T1*_Nullable*_Nullable sin_data = nullptr;
+        int nbr_bits = 0;
+        int N2 = 0;
+    public:
+        twiddle_cache(int bits, int n2): nbr_bits(bits), N2(n2) {
+            // Allocate 2D arrays using heap
+            cos_data = FFTReal::alignedAlloc<T1*>(nbr_bits);
+            sin_data = FFTReal::alignedAlloc<T1*>(nbr_bits);
+            
+            for (int pass = 0; pass < nbr_bits; pass++) {
+                cos_data[pass] = FFTReal::alignedAlloc<T1>(N2);
+                sin_data[pass] = FFTReal::alignedAlloc<T1>(N2);
+                
+                int nbr_coef = 1 << pass;
+                int h_nbr_coef = nbr_coef >> 1;
+                
+                // Skip passes with no coefficients
+                if (h_nbr_coef <= 0) continue;
+                
+                // Initialize for this pass
+                for (int j = 0; j < h_nbr_coef && j < N2; j++) {
+                    T1 angle = (j * M_PI) / nbr_coef;
+                    cos_data[pass][j] = F_COS(angle);
+                    sin_data[pass][j] = F_SIN(angle); // F_COS(M_PI/2 - angle);
+                }
+            }
+        }
+        
+        ~twiddle_cache() {
+            if (cos_data) {
+                for (int i = 0; i < nbr_bits; i++) {
+                    FFTReal::alignedFree(cos_data[i]);
+                    FFTReal::alignedFree(sin_data[i]);
+                }
+                FFTReal::alignedFree(cos_data);
+                FFTReal::alignedFree(sin_data);
+            }
+        }
+        
+        twiddle_cache(twiddle_cache&& other) noexcept :
+            nbr_bits(other.nbr_bits),
+            N2(other.N2),
+            cos_data(std::move(other.cos_data)),
+            sin_data(std::move(other.sin_data))
+        {
+            other.nbr_bits = 0;
+            other.N2 = 0;
+            // other.offsets = nullptr;
+            other.cos_data = nullptr;
+        }
+        
+        // Implement move assignment
+        twiddle_cache& operator=(twiddle_cache&& other) noexcept {
+            if (this != &other) {
+                alignedFree(cos_data);
+                alignedFree(sin_data);
+                
+                nbr_bits = other.nbr_bits;
+                N2 = other.N2;
+                cos_data = std::move(other.cos_data);
+                sin_data = std::move(other.sin_data);
+                
+                nbr_bits = 0;
+                N2 = 0;
+                other.cos_data = nullptr;
+                other.sin_data = nullptr;
+            }
+            return *this;
+        }
+        
+        // Delete copy constructor and assignment to avoid double-free issues
+        twiddle_cache(const twiddle_cache&) = delete;
+        twiddle_cache& operator=(const twiddle_cache&) = delete;
+        
+        inline void get_twiddle(int pass, int j, T1& cos_val, T1& sin_val) const
+        {
+            if (pass >= 0 && pass < nbr_bits && j >= 0 && j < N2) {
+                cos_val = cos_data[pass][j];
+                sin_val = sin_data[pass][j];
+            }
+        }
+    };
+    */
+    
 protected:
     
     // SIMD-Accelerated Helper Functions for FFTReal<float>
@@ -741,10 +912,10 @@ protected:
     }
     
     static inline void complex_mul_8way(
-                                        float* re_out, float* im_out,
-                                        const float* re_a, const float* im_a,
-                                        const float* re_b, const float* im_b,
-                                        int stride)
+        float* re_out, float* im_out,
+        const float* re_a, const float* im_a,
+        const float* re_b, const float* im_b,
+        int stride)
     {
         simd_float8 vra, via, vrb, vib;
         
@@ -769,9 +940,9 @@ protected:
     }
     
     static inline void apply_twiddle_8way(
-                                          float* re, float* im,
-                                          const T1* cos_ptr, const T1* sin_ptr,
-                                          int offset, int stride)
+        float* re, float* im,
+        const T1* cos_ptr, const T1* sin_ptr,
+        int offset, int stride)
     {
         simd_float8 vre, vim, vcos, vsin;
         
@@ -1030,13 +1201,16 @@ protected:
             // 1-point FFT
             f[0] = x[0];
         }
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
     
-    void do_ifft_simd_f1_accel(const float* f, float* x, bool do_scale) {
+    void do_ifft_simd_f1_accel(float* f, float* x, bool do_scale) {
         T1 c, s;
         const float c2 = 2.0f;
         float mul = 1.0f;
         if (do_scale) mul = 1.0f / static_cast<float>(_N);
+        
+       //  for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
         
         if (_nbr_bits > 2) {
             float* sf = const_cast<float*>(f);
@@ -1278,6 +1452,7 @@ protected:
         else {
             x[0] = f[0] * mul;
         }
+       // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
     
     // Helper: Process 4-way vectorized butterfly (for double)
@@ -1305,10 +1480,10 @@ protected:
     // Helper: Vectorized complex multiply (4 complex pairs at once)
     
     static inline void complex_mul_4way_d(
-                                          double* re_out, double* im_out,
-                                          const double* re_a, const double* im_a,
-                                          const double* re_b, const double* im_b,
-                                          int stride)
+        double* re_out, double* im_out,
+        const double* re_a, const double* im_a,
+        const double* re_b, const double* im_b,
+        int stride)
     {
         simd_double4 vra, via, vrb, vib;
         
@@ -1335,9 +1510,9 @@ protected:
     // Helper: Vectorized twiddle factor application
     
     static inline void apply_twiddle_4way_d(
-                                            double* re, double* im,
-                                            const T1* cos_ptr, const T1* sin_ptr,
-                                            int offset, int stride)
+        double* re, double* im,
+        const T1* cos_ptr, const T1* sin_ptr,
+        int offset, int stride)
     {
         simd_double4 vre, vim, vcos, vsin;
         
@@ -1596,17 +1771,18 @@ protected:
             // 1-point FFT
             f[0] = x[0];
         }
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
     // SIMD-Accelerated Inverse FFT for double
     
-    void do_ifft_simd_d1_accel(const double* f, double* x, bool do_scale) {
+    void do_ifft_simd_d1_accel(double* f, double* x, bool do_scale) {
         T1 c, s;
         const double c2 = 2.0;
         double mul = 1.0;
         if (do_scale) mul = 1.0 / static_cast<double>(_N);
         
         if (_nbr_bits > 2) {
-            double* sf = const_cast<double*>(f);
+            double* sf = f;
             double* df;
             double* df_temp;
             
@@ -1696,6 +1872,7 @@ protected:
                     sf = df;
                     df = df_temp;
                 }
+                // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
             }
             
             
@@ -1847,6 +2024,7 @@ protected:
         else {
             x[0] = f[0] * mul;
         }
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
     
     class TrigoLookup {
@@ -3774,8 +3952,8 @@ protected:
             }
             
             // Third pass with SQ2_2 optimizations
-            const float32x2_t sq2_2_vec = vdup_n_f32(SQ2_2);
-
+            const float32x2_t sq2_constants = {-SQ2_2, SQ2_2};
+            
             for (auto i = 0; i < _N; i += 8) {
                 // Prefetch next block
                 if (likely(i + 8 < _N)) {
@@ -3804,12 +3982,13 @@ protected:
                 float32x2_t df5 = vld1_f32((float*)&df[i+5]);
                 float32x2_t df7 = vld1_f32((float*)&df[i+7]);
                 
-                // FIXED: Calculate butterfly correctly
-                // v1 = (df5 - df7) * SQ2_2
-                float32x2_t v1 = vmul_f32(vsub_f32(df5, df7), sq2_2_vec);
+                // Calculate butterfly with optimized operations
+                // For 2-element vectors, use appropriate intrinsics
+                float32x2_t v1 = vmul_n_f32(df5, vget_lane_f32(sq2_constants, 0));
+                v1 = vmla_n_f32(v1, df7, vget_lane_f32(sq2_constants, 0));
                 
-                // v2 = (df5 + df7) * SQ2_2
-                float32x2_t v2 = vmul_f32(vadd_f32(df5, df7), sq2_2_vec);
+                float32x2_t v2 = vmul_n_f32(df5, vget_lane_f32(sq2_constants, 1));
+                v2 = vmla_n_f32(v2, df7, vget_lane_f32(sq2_constants, 1));
                 
                 // Store final results with proper casting
                 vst1_f32((float*)&sf[i+1], vadd_f32(df1, v1));
@@ -3918,6 +4097,7 @@ protected:
         else {
             f[0] = x[0];
         }
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
     
     void do_fft_neon_d2(const simd_double2 *_Nonnull x, simd_double2 *_Nonnull f)
@@ -3973,9 +4153,9 @@ protected:
             }
             
             // Third pass with SQ2_2 optimization
-            // Third pass with SQ2_2 optimization
-            const float64x2_t sq2_2_vec = vdupq_n_f64(SQ2_2);
-
+            const float64x1_t neg_sq2_2 = vdup_n_f64(-SQ2_2);
+            const float64x1_t pos_sq2_2 = vdup_n_f64(SQ2_2);
+            
             for (auto i = 0; i < _N; i += 8) {
                 // Prefetch next block
                 if (likely(i + 8 < _N)) {
@@ -4008,11 +4188,17 @@ protected:
                 float64x2_t df5 = vld1q_f64(df_ptr + 10);
                 float64x2_t df7 = vld1q_f64(df_ptr + 14);
                 
-                // FIXED: v1 = (df5 - df7) * SQ2_2
-                float64x2_t v1 = vmulq_f64(vsubq_f64(df5, df7), sq2_2_vec);
+                // Calculate v1 with scalar multiplication
+                float64x2_t neg_sq2_2_vec = vdupq_n_f64(vget_lane_f64(neg_sq2_2, 0));
+                float64x2_t v1 = vmulq_f64(df5, neg_sq2_2_vec);
+                float64x2_t df7_scaled = vmulq_f64(df7, neg_sq2_2_vec);
+                v1 = vaddq_f64(v1, df7_scaled);
                 
-                // FIXED: v2 = (df5 + df7) * SQ2_2
-                float64x2_t v2 = vmulq_f64(vaddq_f64(df5, df7), sq2_2_vec);
+                // Calculate v2 with scalar multiplication
+                float64x2_t pos_sq2_2_vec = vdupq_n_f64(vget_lane_f64(pos_sq2_2, 0));
+                float64x2_t v2 = vmulq_f64(df5, pos_sq2_2_vec);
+                float64x2_t df7_scaled2 = vmulq_f64(df7, pos_sq2_2_vec);
+                v2 = vaddq_f64(v2, df7_scaled2);
                 
                 // Store final results
                 vst1q_f64(sf_ptr + 2,  vaddq_f64(df1, v1));
@@ -4143,6 +4329,7 @@ protected:
         else {
             f[0] = x[0];
         }
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
     
     void do_fft_neon_f4(const simd_float4 *_Nonnull x, simd_float4 *_Nonnull f)
@@ -4195,9 +4382,8 @@ protected:
             }
             
             // Third pass with SQ2_2 optimizations
-            // Third pass with SQ2_2 optimizations
-            const float32x4_t sq2_2_vec = vdupq_n_f32(SQ2_2);
-
+            static const float32x2_t sq2_constants = {-SQ2_2, SQ2_2};
+            
             for (auto i = 0; i < _N; i += 8) {
                 // Prefetch next block
                 if (likely(i + 8 < _N)) {
@@ -4226,11 +4412,16 @@ protected:
                 float32x4_t df5 = vld1q_f32((float*)&df[i+5]);
                 float32x4_t df7 = vld1q_f32((float*)&df[i+7]);
                 
-                // FIXED: v1 = (df5 - df7) * SQ2_2
-                float32x4_t v1 = vmulq_f32(vsubq_f32(df5, df7), sq2_2_vec);
+                // Calculate butterfly with FMA operations
+                float32x4_t v1 = vfmaq_lane_f32(
+                                                vfmaq_lane_f32(vdupq_n_f32(0.0f), df5, sq2_constants, 0),
+                                                df7, sq2_constants, 0
+                                                );
                 
-                // FIXED: v2 = (df5 + df7) * SQ2_2
-                float32x4_t v2 = vmulq_f32(vaddq_f32(df5, df7), sq2_2_vec);
+                float32x4_t v2 = vfmaq_lane_f32(
+                                                vfmaq_lane_f32(vdupq_n_f32(0.0f), df5, sq2_constants, 1),
+                                                df7, sq2_constants, 1
+                                                );
                 
                 // Store final results with proper casting
                 vst1q_f32((float*)&sf[i+1], vaddq_f32(df1, v1));
@@ -4341,6 +4532,7 @@ protected:
         else {
             f[0] = x[0];
         }
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
     
     void do_fft_neon_d4(const simd_double4 *_Nonnull x, simd_double4 *_Nonnull f)
@@ -4414,9 +4606,9 @@ protected:
             }
             
             // Third pass with optimized SQ2_2 calculations
-            // Third pass with optimized SQ2_2 calculations
-            const float64x2_t sq2_2_vec = vdupq_n_f64(SQ2_2);
-
+            const float64x1_t neg_sq2_2 = vdup_n_f64(-SQ2_2);
+            const float64x1_t pos_sq2_2 = vdup_n_f64(SQ2_2);
+            
             for (auto i = 0; i < _N; i += 8) {
                 auto sf2 = &sf[i];
                 auto df2 = &df[i];
@@ -4466,13 +4658,27 @@ protected:
                 float64x2_t df7_low = vld1q_f64(df_ptr + 28);
                 float64x2_t df7_high = vld1q_f64(df_ptr + 30);
                 
-                // FIXED: v1 = (df5 - df7) * SQ2_2
-                float64x2_t v1_low = vmulq_f64(vsubq_f64(df5_low, df7_low), sq2_2_vec);
-                float64x2_t v1_high = vmulq_f64(vsubq_f64(df5_high, df7_high), sq2_2_vec);
+                // Calculate v1 with proper operations for doubles
+                float64x2_t v1_low = vmulq_lane_f64(df5_low, neg_sq2_2, 0);
+                float64x2_t v1_high = vmulq_lane_f64(df5_high, neg_sq2_2, 0);
                 
-                // FIXED: v2 = (df5 + df7) * SQ2_2
-                float64x2_t v2_low = vmulq_f64(vaddq_f64(df5_low, df7_low), sq2_2_vec);
-                float64x2_t v2_high = vmulq_f64(vaddq_f64(df5_high, df7_high), sq2_2_vec);
+                // Create a vector with the scalar value in both lanes
+                float64x2_t neg_sq2_2_vec = vdupq_n_f64(vget_lane_f64(neg_sq2_2, 0));
+                
+                // Multiply and add separately
+                float64x2_t df7_low_scaled = vmulq_f64(df7_low, neg_sq2_2_vec);
+                float64x2_t df7_high_scaled = vmulq_f64(df7_high, neg_sq2_2_vec);
+                v1_low = vaddq_f64(v1_low, df7_low_scaled);
+                v1_high = vaddq_f64(v1_high, df7_high_scaled);
+                
+                // Calculate v2 - similar pattern as v1
+                float64x2_t v2_low = vmulq_lane_f64(df5_low, pos_sq2_2, 0);
+                float64x2_t v2_high = vmulq_lane_f64(df5_high, pos_sq2_2, 0);
+                float64x2_t pos_sq2_2_vec = vdupq_n_f64(vget_lane_f64(pos_sq2_2, 0));
+                float64x2_t df7_low_scaled2 = vmulq_f64(df7_low, pos_sq2_2_vec);
+                float64x2_t df7_high_scaled2 = vmulq_f64(df7_high, pos_sq2_2_vec);
+                v2_low = vaddq_f64(v2_low, df7_low_scaled2);
+                v2_high = vaddq_f64(v2_high, df7_high_scaled2);
                 
                 // Store final results
                 vst1q_f64(sf_ptr + 4,  vaddq_f64(df1_low, v1_low));
@@ -4631,6 +4837,7 @@ protected:
         else {
             f[0] = x[0];
         }
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
     
     void do_fft_neon_f8(const simd_float8 *_Nonnull x, simd_float8 *_Nonnull f)
@@ -4668,14 +4875,14 @@ protected:
                 auto lut2 = lut[i+2];
                 auto lut3 = lut[i+3];
                 
-                float32x4_t x0_low = vld1q_f32(&x[lut0].f[0]);
-                float32x4_t x0_high = vld1q_f32(&x[lut0].f[4]);
-                float32x4_t x1_low = vld1q_f32(&x[lut1].f[0]);
-                float32x4_t x1_high = vld1q_f32(&x[lut1].f[4]);
-                float32x4_t x2_low = vld1q_f32(&x[lut2].f[0]);
-                float32x4_t x2_high = vld1q_f32(&x[lut2].f[4]);
-                float32x4_t x3_low = vld1q_f32(&x[lut3].f[0]);
-                float32x4_t x3_high = vld1q_f32(&x[lut3].f[4]);
+                float32x4_t x0_low = vld1q_f32((float*)&x[lut0]);
+                float32x4_t x0_high = vld1q_f32((float*)&x[lut0] + 4);
+                float32x4_t x1_low = vld1q_f32((float*)&x[lut1]);
+                float32x4_t x1_high = vld1q_f32((float*)&x[lut1] + 4);
+                float32x4_t x2_low = vld1q_f32((float*)&x[lut2]);
+                float32x4_t x2_high = vld1q_f32((float*)&x[lut2] + 4);
+                float32x4_t x3_low = vld1q_f32((float*)&x[lut3]);
+                float32x4_t x3_high = vld1q_f32((float*)&x[lut3] + 4);
                 
                 // Compute all sums and differences in parallel
                 float32x4_t sum01_low = vaddq_f32(x0_low, x1_low);
@@ -4694,24 +4901,25 @@ protected:
                 float32x4_t diff0123_high = vsubq_f32(sum01_high, sum23_high);
                 
                 // Store results with cache line optimization
-                vst1q_f32(&df2[0].f[0], sum0123_low);
-                vst1q_f32(&df2[0].f[4], sum0123_high);
-                vst1q_f32(&df2[1].f[0], diff01_low);
-                vst1q_f32(&df2[1].f[4], diff01_high);
-                vst1q_f32(&df2[2].f[0], diff0123_low);
-                vst1q_f32(&df2[2].f[4], diff0123_high);
-                vst1q_f32(&df2[3].f[0], diff23_low);
-                vst1q_f32(&df2[3].f[4], diff23_high);
+                vst1q_f32((float*)&df2[0], sum0123_low);
+                vst1q_f32((float*)&df2[0] + 4, sum0123_high);
+                vst1q_f32((float*)&df2[1], diff01_low);
+                vst1q_f32((float*)&df2[1] + 4, diff01_high);
+                vst1q_f32((float*)&df2[2], diff0123_low);
+                vst1q_f32((float*)&df2[2] + 4, diff0123_high);
+                vst1q_f32((float*)&df2[3], diff23_low);
+                vst1q_f32((float*)&df2[3] + 4, diff23_high);
             }
             
             // Third pass with software pipelining
+            static const float32x2_t sq2_constants = {-SQ2_2, SQ2_2};
             
             // Preload first block
             auto df_first = &df[0];
-            float32x4_t df0_low_next = vld1q_f32(&df_first[0].f[0]);
-            float32x4_t df0_high_next = vld1q_f32(&df_first[0].f[4]);
-            float32x4_t df4_low_next = vld1q_f32(&df_first[4].f[0]);
-            float32x4_t df4_high_next = vld1q_f32(&df_first[4].f[4]);
+            float32x4_t df0_low_next = vld1q_f32((float*)&df_first[0]);
+            float32x4_t df0_high_next = vld1q_f32((float*)&df_first[0] + 4);
+            float32x4_t df4_low_next = vld1q_f32((float*)&df_first[4]);
+            float32x4_t df4_high_next = vld1q_f32((float*)&df_first[4] + 4);
             
             for (auto i = 0; i < _N; i += 8) {
                 auto sf2 = &sf[i];
@@ -4729,10 +4937,10 @@ protected:
                     __builtin_prefetch(&df[i+12], 0, 3);
                     
                     if (likely(i + 16 < _N)) {
-                        df0_low_next = vld1q_f32(&df[i+8].f[0]);
-                        df0_high_next = vld1q_f32(&df[i+8].f[4]);
-                        df4_low_next = vld1q_f32(&df[i+12].f[0]);
-                        df4_high_next = vld1q_f32(&df[i+12].f[4]);
+                        df0_low_next = vld1q_f32((float*)&df[i+8]);
+                        df0_high_next = vld1q_f32((float*)&df[i+8] + 4);
+                        df4_low_next = vld1q_f32((float*)&df[i+12]);
+                        df4_high_next = vld1q_f32((float*)&df[i+12] + 4);
                     }
                 }
                 
@@ -4743,54 +4951,54 @@ protected:
                 float32x4_t diff04_high = vsubq_f32(df0_high, df4_high);
                 
                 // Store first part while loading more data
-                vst1q_f32(&sf2[0].f[0], sum04_low);
-                float32x4_t df2val_low = vld1q_f32(&df2[2].f[0]);
-                vst1q_f32(&sf2[0].f[4], sum04_high);
-                float32x4_t df2val_high = vld1q_f32(&df2[2].f[4]);
+                vst1q_f32((float*)&sf2[0], sum04_low);
+                float32x4_t df2val_low = vld1q_f32((float*)&df2[2]);
+                vst1q_f32((float*)&sf2[0] + 4, sum04_high);
+                float32x4_t df2val_high = vld1q_f32((float*)&df2[2] + 4);
                 
-                vst1q_f32(&sf2[4].f[0], diff04_low);
-                float32x4_t df6val_low = vld1q_f32(&df2[6].f[0]);
-                vst1q_f32(&sf2[4].f[4], diff04_high);
-                float32x4_t df6val_high = vld1q_f32(&df2[6].f[4]);
+                vst1q_f32((float*)&sf2[4], diff04_low);
+                float32x4_t df6val_low = vld1q_f32((float*)&df2[6]);
+                vst1q_f32((float*)&sf2[4] + 4, diff04_high);
+                float32x4_t df6val_high = vld1q_f32((float*)&df2[6] + 4);
                 
                 // Store simple copies while loading more data
-                vst1q_f32(&sf2[2].f[0], df2val_low);
-                float32x4_t df1_low = vld1q_f32(&df2[1].f[0]);
-                vst1q_f32(&sf2[2].f[4], df2val_high);
-                float32x4_t df1_high = vld1q_f32(&df2[1].f[4]);
+                vst1q_f32((float*)&sf2[2], df2val_low);
+                float32x4_t df1_low = vld1q_f32((float*)&df2[1]);
+                vst1q_f32((float*)&sf2[2] + 4, df2val_high);
+                float32x4_t df1_high = vld1q_f32((float*)&df2[1] + 4);
                 
-                vst1q_f32(&sf2[6].f[0], df6val_low);
-                float32x4_t df3_low = vld1q_f32(&df2[3].f[0]);
-                vst1q_f32(&sf2[6].f[4], df6val_high);
-                float32x4_t df3_high = vld1q_f32(&df2[3].f[4]);
+                vst1q_f32((float*)&sf2[6], df6val_low);
+                float32x4_t df3_low = vld1q_f32((float*)&df2[3]);
+                vst1q_f32((float*)&sf2[6] + 4, df6val_high);
+                float32x4_t df3_high = vld1q_f32((float*)&df2[3] + 4);
                 
                 // Load remaining data
-                float32x4_t df5_low = vld1q_f32(&df2[5].f[0]);
-                float32x4_t df5_high = vld1q_f32(&df2[5].f[4]);
-                float32x4_t df7_low = vld1q_f32(&df2[7].f[0]);
-                float32x4_t df7_high = vld1q_f32(&df2[7].f[4]);
+                float32x4_t df5_low = vld1q_f32((float*)&df2[5]);
+                float32x4_t df5_high = vld1q_f32((float*)&df2[5] + 4);
+                float32x4_t df7_low = vld1q_f32((float*)&df2[7]);
+                float32x4_t df7_high = vld1q_f32((float*)&df2[7] + 4);
                 
                 // Optimized butterfly with lane-specific FMA
-                const float32x4_t sq2_2_vec = vdupq_n_f32(SQ2_2);
-
-                // v1 = (df5 - df7) * SQ2_2
-                float32x4_t v1_low = vmulq_f32(vsubq_f32(df5_low, df7_low), sq2_2_vec);
-                float32x4_t v1_high = vmulq_f32(vsubq_f32(df5_high, df7_high), sq2_2_vec);
-
-                // v2 = (df5 + df7) * SQ2_2
-                float32x4_t v2_low = vmulq_f32(vaddq_f32(df5_low, df7_low), sq2_2_vec);
-                float32x4_t v2_high = vmulq_f32(vaddq_f32(df5_high, df7_high), sq2_2_vec);
+                float32x4_t v1_low = vfmaq_lane_f32(vfmaq_lane_f32(vdupq_n_f32(0), df5_low, sq2_constants, 0),
+                                                    df7_low, sq2_constants, 0);
+                float32x4_t v1_high = vfmaq_lane_f32(vfmaq_lane_f32(vdupq_n_f32(0), df5_high, sq2_constants, 0),
+                                                     df7_high, sq2_constants, 0);
+                
+                float32x4_t v2_low = vfmaq_lane_f32(vfmaq_lane_f32(vdupq_n_f32(0), df5_low, sq2_constants, 1),
+                                                    df7_low, sq2_constants, 1);
+                float32x4_t v2_high = vfmaq_lane_f32(vfmaq_lane_f32(vdupq_n_f32(0), df5_high, sq2_constants, 1),
+                                                     df7_high, sq2_constants, 1);
                 
                 // Final stores
-                vst1q_f32(&sf2[1].f[0], vaddq_f32(df1_low, v1_low));
-                vst1q_f32(&sf2[1].f[4], vaddq_f32(df1_high, v1_high));
-                vst1q_f32(&sf2[3].f[0], vsubq_f32(df1_low, v1_low));
-                vst1q_f32(&sf2[3].f[4], vsubq_f32(df1_high, v1_high));
+                vst1q_f32((float*)&sf2[1], vaddq_f32(df1_low, v1_low));
+                vst1q_f32((float*)&sf2[1] + 4, vaddq_f32(df1_high, v1_high));
+                vst1q_f32((float*)&sf2[3], vsubq_f32(df1_low, v1_low));
+                vst1q_f32((float*)&sf2[3] + 4, vsubq_f32(df1_high, v1_high));
                 
-                vst1q_f32(&sf2[5].f[0], vaddq_f32(v2_low, df3_low));
-                vst1q_f32(&sf2[5].f[4], vaddq_f32(v2_high, df3_high));
-                vst1q_f32(&sf2[7].f[0], vsubq_f32(v2_low, df3_low));
-                vst1q_f32(&sf2[7].f[4], vsubq_f32(v2_high, df3_high));
+                vst1q_f32((float*)&sf2[5], vaddq_f32(v2_low, df3_low));
+                vst1q_f32((float*)&sf2[5] + 4, vaddq_f32(v2_high, df3_high));
+                vst1q_f32((float*)&sf2[7], vsubq_f32(v2_low, df3_low));
+                vst1q_f32((float*)&sf2[7] + 4, vsubq_f32(v2_high, df3_high));
             }
             
             // Next passes optimization with improved twiddle factor handling
@@ -4813,25 +5021,25 @@ protected:
                     }
                     
                     // Process extreme coefficients first (always real)
-                    float32x4_t sf1r_0_low = vld1q_f32(&sf1r[0].f[0]);
-                    float32x4_t sf1r_0_high = vld1q_f32(&sf1r[0].f[4]);
-                    float32x4_t sf2r_0_low = vld1q_f32(&sf2r[0].f[0]);
-                    float32x4_t sf2r_0_high = vld1q_f32(&sf2r[0].f[4]);
+                    float32x4_t sf1r_0_low = vld1q_f32((float*)&sf1r[0]);
+                    float32x4_t sf1r_0_high = vld1q_f32((float*)&sf1r[0] + 4);
+                    float32x4_t sf2r_0_low = vld1q_f32((float*)&sf2r[0]);
+                    float32x4_t sf2r_0_high = vld1q_f32((float*)&sf2r[0] + 4);
                     
-                    vst1q_f32(&dfr[0].f[0], vaddq_f32(sf1r_0_low, sf2r_0_low));
-                    vst1q_f32(&dfr[0].f[4], vaddq_f32(sf1r_0_high, sf2r_0_high));
-                    vst1q_f32(&dfi[0].f[0], vsubq_f32(sf1r_0_low, sf2r_0_low));
-                    vst1q_f32(&dfi[0].f[4], vsubq_f32(sf1r_0_high, sf2r_0_high));
+                    vst1q_f32((float*)&dfr[0], vaddq_f32(sf1r_0_low, sf2r_0_low));
+                    vst1q_f32((float*)&dfr[0] + 4, vaddq_f32(sf1r_0_high, sf2r_0_high));
+                    vst1q_f32((float*)&dfi[0], vsubq_f32(sf1r_0_low, sf2r_0_low));
+                    vst1q_f32((float*)&dfi[0] + 4, vsubq_f32(sf1r_0_high, sf2r_0_high));
                     
-                    float32x4_t sf1r_h_low = vld1q_f32(&sf1r[h_nbr_coef].f[0]);
-                    float32x4_t sf1r_h_high = vld1q_f32(&sf1r[h_nbr_coef].f[4]);
-                    float32x4_t sf2r_h_low = vld1q_f32(&sf2r[h_nbr_coef].f[0]);
-                    float32x4_t sf2r_h_high = vld1q_f32(&sf2r[h_nbr_coef].f[4]);
+                    float32x4_t sf1r_h_low = vld1q_f32((float*)&sf1r[h_nbr_coef]);
+                    float32x4_t sf1r_h_high = vld1q_f32((float*)&sf1r[h_nbr_coef] + 4);
+                    float32x4_t sf2r_h_low = vld1q_f32((float*)&sf2r[h_nbr_coef]);
+                    float32x4_t sf2r_h_high = vld1q_f32((float*)&sf2r[h_nbr_coef] + 4);
                     
-                    vst1q_f32(&dfr[h_nbr_coef].f[0], sf1r_h_low);
-                    vst1q_f32(&dfr[h_nbr_coef].f[4], sf1r_h_high);
-                    vst1q_f32(&dfi[h_nbr_coef].f[0], sf2r_h_low);
-                    vst1q_f32(&dfi[h_nbr_coef].f[4], sf2r_h_high);
+                    vst1q_f32((float*)&dfr[h_nbr_coef], sf1r_h_low);
+                    vst1q_f32((float*)&dfr[h_nbr_coef] + 4, sf1r_h_high);
+                    vst1q_f32((float*)&dfi[h_nbr_coef], sf2r_h_low);
+                    vst1q_f32((float*)&dfi[h_nbr_coef] + 4, sf2r_h_high);
                     
                     // Process conjugate complex numbers with twiddle factors
                     auto sf1i = &sf1r[h_nbr_coef];
@@ -4860,34 +5068,34 @@ protected:
                         float32x4_t s_vec = vdupq_n_f32(s);
                         
                         // Load data
-                        float32x4_t sf2r_j_low = vld1q_f32(&sf2r[j].f[0]);
-                        float32x4_t sf2r_j_high = vld1q_f32(&sf2r[j].f[4]);
-                        float32x4_t sf2i_j_low = vld1q_f32(&sf2i[j].f[0]);
-                        float32x4_t sf2i_j_high = vld1q_f32(&sf2i[j].f[4]);
-                        float32x4_t sf1r_j_low = vld1q_f32(&sf1r[j].f[0]);
-                        float32x4_t sf1r_j_high = vld1q_f32(&sf1r[j].f[4]);
+                        float32x4_t sf2r_j_low = vld1q_f32((float*)&sf2r[j]);
+                        float32x4_t sf2r_j_high = vld1q_f32((float*)&sf2r[j] + 4);
+                        float32x4_t sf2i_j_low = vld1q_f32((float*)&sf2i[j]);
+                        float32x4_t sf2i_j_high = vld1q_f32((float*)&sf2i[j] + 4);
+                        float32x4_t sf1r_j_low = vld1q_f32((float*)&sf1r[j]);
+                        float32x4_t sf1r_j_high = vld1q_f32((float*)&sf1r[j] + 4);
                         
                         // Compute first part: v = sf2r[j] * c - sf2i[j] * s
                         float32x4_t v_low = vfmsq_f32(vmulq_f32(sf2r_j_low, c_vec), sf2i_j_low, s_vec);
                         float32x4_t v_high = vfmsq_f32(vmulq_f32(sf2r_j_high, c_vec), sf2i_j_high, s_vec);
                         
                         // Store computed values
-                        vst1q_f32(&dfr[j].f[0], vaddq_f32(sf1r_j_low, v_low));
-                        vst1q_f32(&dfr[j].f[4], vaddq_f32(sf1r_j_high, v_high));
-                        vst1q_f32(&dfi[-j].f[0], vsubq_f32(sf1r_j_low, v_low));
-                        vst1q_f32(&dfi[-j].f[4], vsubq_f32(sf1r_j_high, v_high));
+                        vst1q_f32((float*)&dfr[j], vaddq_f32(sf1r_j_low, v_low));
+                        vst1q_f32((float*)&dfr[j] + 4, vaddq_f32(sf1r_j_high, v_high));
+                        vst1q_f32((float*)&dfi[-j], vsubq_f32(sf1r_j_low, v_low));
+                        vst1q_f32((float*)&dfi[-j] + 4, vsubq_f32(sf1r_j_high, v_high));
                         
                         // Compute second part: v = sf2r[j] * s + sf2i[j] * c
-                        float32x4_t sf1i_j_low = vld1q_f32(&sf1i[j].f[0]);
-                        float32x4_t sf1i_j_high = vld1q_f32(&sf1i[j].f[4]);
+                        float32x4_t sf1i_j_low = vld1q_f32((float*)&sf1i[j]);
+                        float32x4_t sf1i_j_high = vld1q_f32((float*)&sf1i[j] + 4);
                         
                         v_low = vfmaq_f32(vmulq_f32(sf2r_j_low, s_vec), sf2i_j_low, c_vec);
                         v_high = vfmaq_f32(vmulq_f32(sf2r_j_high, s_vec), sf2i_j_high, c_vec);
                         
-                        vst1q_f32(&dfi[j].f[0], vaddq_f32(v_low, sf1i_j_low));
-                        vst1q_f32(&dfi[j].f[4], vaddq_f32(v_high, sf1i_j_high));
-                        vst1q_f32(&dfi[nbr_coef - j].f[0], vsubq_f32(v_low, sf1i_j_low));
-                        vst1q_f32(&dfi[nbr_coef - j].f[4], vsubq_f32(v_high, sf1i_j_high));
+                        vst1q_f32((float*)&dfi[j], vaddq_f32(v_low, sf1i_j_low));
+                        vst1q_f32((float*)&dfi[j] + 4, vaddq_f32(v_high, sf1i_j_high));
+                        vst1q_f32((float*)&dfi[nbr_coef - j], vsubq_f32(v_low, sf1i_j_low));
+                        vst1q_f32((float*)&dfi[nbr_coef - j] + 4, vsubq_f32(v_high, sf1i_j_high));
                     }
                 }
                 // Prepare for next pass
@@ -4914,6 +5122,7 @@ protected:
         else {
             f[0] = x[0];
         }
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
     
     void do_fft_neon_d8(const simd_double8 *_Nonnull x, simd_double8 *_Nonnull f)
@@ -4951,13 +5160,13 @@ protected:
                 auto lut3 = &lut[i+3];
                 
                 // Load with prefetch assistance
-                float64x2_t x0_low  = vld1q_f64(&x[lut0].f[0]);
+                float64x2_t x0_low  = vld1q_f64(&x[lut0]);
                 float64x2_t x0_high = vld1q_f64(&x[lut0].f[2]);
-                float64x2_t x1_low  = vld1q_f64(&x[lut1].f[0]);
+                float64x2_t x1_low  = vld1q_f64(&x[lut1]);
                 float64x2_t x1_high = vld1q_f64(&x[lut1].f[2]);
-                float64x2_t x2_low  = vld1q_f64(&x[lut2].f[0]);
+                float64x2_t x2_low  = vld1q_f64(&x[lut2]);
                 float64x2_t x2_high = vld1q_f64(&x[lut2].f[2]);
-                float64x2_t x3_low  = vld1q_f64(&x[lut3].f[0]);
+                float64x2_t x3_low  = vld1q_f64(&x[lut3]);
                 float64x2_t x3_high = vld1q_f64(&x[lut3].f[2]);
                 
                 // Compute sums and differences
@@ -4978,26 +5187,28 @@ protected:
                 float64x2_t diff0123_high = vsubq_f64(sum01_high, sum23_high);
                 
                 // Store with optimized pattern for cache line utilization
-                vst1q_f64(&df2[0].f[0], sum0123_low);
+                vst1q_f64(&df2[0], sum0123_low);
                 vst1q_f64(&df2[0].f[2], sum0123_high);
-                vst1q_f64(&df2[1].f[0], diff01_low);
+                vst1q_f64(&df2[1], diff01_low);
                 vst1q_f64(&df2[1].f[2], diff01_high);
-                vst1q_f64(&df2[2].f[0], diff0123_low);
+                vst1q_f64(&df2[2], diff0123_low);
                 vst1q_f64(&df2[2].f[2], diff0123_high);
-                vst1q_f64(&df2[3].f[0], diff23_low);
+                vst1q_f64(&df2[3], diff23_low);
                 vst1q_f64(&df2[3].f[2], diff23_high);
             }
             
             // Third pass with software pipelining
-            const float64x2_t sq2_2_vec = vdupq_n_f64(SQ2_2);
-
+            // Precomputed constants
+            const float64x1_t neg_sq2_2 = vdup_n_f64(-SQ2_2);
+            const float64x1_t pos_sq2_2 = vdup_n_f64(SQ2_2);
+            
             // Preload first data block
             auto df_first = &df[0];
-            float64x2_t df0_low_next = vld1q_f64(&df_first[0].f[0]);
+            float64x2_t df0_low_next = vld1q_f64(&df_first[0]);
             float64x2_t df0_high_next = vld1q_f64(&df_first[0].f[2]);
-            float64x2_t df4_low_next = vld1q_f64(&df_first[4].f[0]);
+            float64x2_t df4_low_next = vld1q_f64(&df_first[4]);
             float64x2_t df4_high_next = vld1q_f64(&df_first[4].f[2]);
-
+            
             for (auto i = 0; i < _N; i += 8) {
                 auto sf2 = &sf[i];
                 auto df2 = &df[i];
@@ -5014,9 +5225,9 @@ protected:
                     __builtin_prefetch(&df[i+12], 0, 3);
                     
                     if (likely(i + 16 < _N)) {
-                        df0_low_next = vld1q_f64(&df[i+8].f[0]);
+                        df0_low_next = vld1q_f64(&df[i+8]);
                         df0_high_next = vld1q_f64(&df[i+8].f[2]);
-                        df4_low_next = vld1q_f64(&df[i+12].f[0]);
+                        df4_low_next = vld1q_f64(&df[i+12]);
                         df4_high_next = vld1q_f64(&df[i+12].f[2]);
                     }
                 }
@@ -5028,47 +5239,46 @@ protected:
                 float64x2_t diff04_high = vsubq_f64(df0_high, df4_high);
                 
                 // Load more data in interleaved pattern
-                float64x2_t df2val_low = vld1q_f64(&df2[2].f[0]);
+                float64x2_t df2val_low = vld1q_f64(&df2[2]);
                 float64x2_t df2val_high = vld1q_f64(&df2[2].f[2]);
-                float64x2_t df6val_low = vld1q_f64(&df2[6].f[0]);
+                float64x2_t df6val_low = vld1q_f64(&df2[6]);
                 float64x2_t df6val_high = vld1q_f64(&df2[6].f[2]);
                 
-                float64x2_t df1_low = vld1q_f64(&df2[1].f[0]);
+                float64x2_t df1_low = vld1q_f64(&df2[1]);
                 float64x2_t df1_high = vld1q_f64(&df2[1].f[2]);
-                float64x2_t df3_low = vld1q_f64(&df2[3].f[0]);
+                float64x2_t df3_low = vld1q_f64(&df2[3]);
                 float64x2_t df3_high = vld1q_f64(&df2[3].f[2]);
-                float64x2_t df5_low = vld1q_f64(&df2[5].f[0]);
+                float64x2_t df5_low = vld1q_f64(&df2[5]);
                 float64x2_t df5_high = vld1q_f64(&df2[5].f[2]);
-                float64x2_t df7_low = vld1q_f64(&df2[7].f[0]);
+                float64x2_t df7_low = vld1q_f64(&df2[7]);
                 float64x2_t df7_high = vld1q_f64(&df2[7].f[2]);
                 
                 // Store early results while continuing computation
-                vst1q_f64(&sf2[0].f[0], sum04_low);
+                vst1q_f64(&sf2[0], sum04_low);
                 vst1q_f64(&sf2[0].f[2], sum04_high);
-                vst1q_f64(&sf2[4].f[0], diff04_low);
+                vst1q_f64(&sf2[4], diff04_low);
                 vst1q_f64(&sf2[4].f[2], diff04_high);
-                vst1q_f64(&sf2[2].f[0], df2val_low);
+                vst1q_f64(&sf2[2], df2val_low);
                 vst1q_f64(&sf2[2].f[2], df2val_high);
-                vst1q_f64(&sf2[6].f[0], df6val_low);
+                vst1q_f64(&sf2[6], df6val_low);
                 vst1q_f64(&sf2[6].f[2], df6val_high);
                 
-                // FIXED: v1 = (df5 - df7) * SQ2_2
-                float64x2_t v1_low = vmulq_f64(vsubq_f64(df5_low, df7_low), sq2_2_vec);
-                float64x2_t v1_high = vmulq_f64(vsubq_f64(df5_high, df7_high), sq2_2_vec);
+                // Optimized FMA operations for double precision
+                float64x2_t v1_low = vfmaq_lane_f64(vfmaq_lane_f64(vdupq_n_f64(0), df5_low, neg_sq2_2, 0), df7_low, neg_sq2_2, 0);
+                float64x2_t v1_high = vfmaq_lane_f64(vfmaq_lane_f64(vdupq_n_f64(0), df5_high, neg_sq2_2, 0), df7_high, neg_sq2_2, 0);
                 
-                // FIXED: v2 = (df5 + df7) * SQ2_2
-                float64x2_t v2_low = vmulq_f64(vaddq_f64(df5_low, df7_low), sq2_2_vec);
-                float64x2_t v2_high = vmulq_f64(vaddq_f64(df5_high, df7_high), sq2_2_vec);
+                float64x2_t v2_low = vfmaq_lane_f64(vfmaq_lane_f64(vdupq_n_f64(0), df5_low, pos_sq2_2, 0), df7_low, pos_sq2_2, 0);
+                float64x2_t v2_high = vfmaq_lane_f64(vfmaq_lane_f64(vdupq_n_f64(0), df5_high, pos_sq2_2, 0), df7_high, pos_sq2_2, 0);
                 
                 // Final stores
-                vst1q_f64(&sf2[1].f[0], vaddq_f64(df1_low, v1_low));
+                vst1q_f64(&sf2[1], vaddq_f64(df1_low, v1_low));
                 vst1q_f64(&sf2[1].f[2], vaddq_f64(df1_high, v1_high));
-                vst1q_f64(&sf2[3].f[0], vsubq_f64(df1_low, v1_low));
+                vst1q_f64(&sf2[3], vsubq_f64(df1_low, v1_low));
                 vst1q_f64(&sf2[3].f[2], vsubq_f64(df1_high, v1_high));
                 
-                vst1q_f64(&sf2[5].f[0], vaddq_f64(v2_low, df3_low));
+                vst1q_f64(&sf2[5], vaddq_f64(v2_low, df3_low));
                 vst1q_f64(&sf2[5].f[2], vaddq_f64(v2_high, df3_high));
-                vst1q_f64(&sf2[7].f[0], vsubq_f64(v2_low, df3_low));
+                vst1q_f64(&sf2[7], vsubq_f64(v2_low, df3_low));
                 vst1q_f64(&sf2[7].f[2], vsubq_f64(v2_high, df3_high));
             }
             
@@ -5091,19 +5301,19 @@ protected:
                     }
                     
                     // Process extreme coefficients
-                    float64x2_t sf1r_0_low = vld1q_f64(&sf1r[0].f[0]);
+                    float64x2_t sf1r_0_low = vld1q_f64(&sf1r[0]);
                     float64x2_t sf1r_0_high = vld1q_f64(&sf1r[0].f[2]);
-                    float64x2_t sf2r_0_low = vld1q_f64(&sf2r[0].f[0]);
+                    float64x2_t sf2r_0_low = vld1q_f64(&sf2r[0]);
                     float64x2_t sf2r_0_high = vld1q_f64(&sf2r[0].f[2]);
                     
-                    vst1q_f64(&dfr[0].f[0], vaddq_f64(sf1r_0_low, sf2r_0_low));
+                    vst1q_f64(&dfr[0], vaddq_f64(sf1r_0_low, sf2r_0_low));
                     vst1q_f64(&dfr[0].f[2], vaddq_f64(sf1r_0_high, sf2r_0_high));
-                    vst1q_f64(&dfi[0].f[0], vsubq_f64(sf1r_0_low, sf2r_0_low));
+                    vst1q_f64(&dfi[0], vsubq_f64(sf1r_0_low, sf2r_0_low));
                     vst1q_f64(&dfi[0].f[2], vsubq_f64(sf1r_0_high, sf2r_0_high));
                     
-                    vst1q_f64(&dfr[h_nbr_coef].f[0], vld1q_f64(&sf1r[h_nbr_coef].f[0]));
+                    vst1q_f64(&dfr[h_nbr_coef], vld1q_f64(&sf1r[h_nbr_coef]));
                     vst1q_f64(&dfr[h_nbr_coef].f[2], vld1q_f64(&sf1r[h_nbr_coef].f[2]));
-                    vst1q_f64(&dfi[h_nbr_coef].f[0], vld1q_f64(&sf2r[h_nbr_coef].f[0]));
+                    vst1q_f64(&dfi[h_nbr_coef], vld1q_f64(&sf2r[h_nbr_coef]));
                     vst1q_f64(&dfi[h_nbr_coef].f[2], vld1q_f64(&sf2r[h_nbr_coef].f[2]));
                     
                     // Process other conjugate complex numbers
@@ -5135,11 +5345,11 @@ protected:
                         float64x1_t sin_val = vdup_n_f64(s);
                         
                         // Load data
-                        float64x2_t sf1r_j_low = vld1q_f64(&sf1r[j].f[0]);
+                        float64x2_t sf1r_j_low = vld1q_f64(&sf1r[j]);
                         float64x2_t sf1r_j_high = vld1q_f64(&sf1r[j].f[2]);
-                        float64x2_t sf2r_j_low = vld1q_f64(&sf2r[j].f[0]);
+                        float64x2_t sf2r_j_low = vld1q_f64(&sf2r[j]);
                         float64x2_t sf2r_j_high = vld1q_f64(&sf2r[j].f[2]);
-                        float64x2_t sf2i_j_low = vld1q_f64(&sf2i[j].f[0]);
+                        float64x2_t sf2i_j_low = vld1q_f64(&sf2i[j]);
                         float64x2_t sf2i_j_high = vld1q_f64(&sf2i[j].f[2]);
                         
                         // Compute v = sf2r[j] * c - sf2i[j] * s
@@ -5155,21 +5365,21 @@ protected:
                         float64x2_t v_high = vsubq_f64(sf2r_c_high, sf2i_s_high);
                         
                         // Store results
-                        vst1q_f64(&dfr[j].f[0], vaddq_f64(sf1r_j_low, v_low));
+                        vst1q_f64(&dfr[j], vaddq_f64(sf1r_j_low, v_low));
                         vst1q_f64(&dfr[j].f[2], vaddq_f64(sf1r_j_high, v_high));
-                        vst1q_f64(&dfi[-j].f[0], vsubq_f64(sf1r_j_low, v_low));
+                        vst1q_f64(&dfi[-j], vsubq_f64(sf1r_j_low, v_low));
                         vst1q_f64(&dfi[-j].f[2], vsubq_f64(sf1r_j_high, v_high));
                         
                         // Compute v = sf2r[j] * s + sf2i[j] * c
-                        float64x2_t sf1i_j_low = vld1q_f64(&sf1i[j].f[0]);
+                        float64x2_t sf1i_j_low = vld1q_f64(&sf1i[j]);
                         float64x2_t sf1i_j_high = vld1q_f64(&sf1i[j].f[2]);
                         
                         v_low = vfmaq_lane_f64(vmulq_lane_f64(sf2r_j_low, sin_val, 0), sf2i_j_low, cos_val, 0);
                         v_high = vfmaq_lane_f64(vmulq_lane_f64(sf2r_j_high, sin_val, 0), sf2i_j_high, cos_val, 0);
                         
-                        vst1q_f64(&dfi[j].f[0], vaddq_f64(v_low, sf1i_j_low));
+                        vst1q_f64(&dfi[j], vaddq_f64(v_low, sf1i_j_low));
                         vst1q_f64(&dfi[j].f[2], vaddq_f64(v_high, sf1i_j_high));
-                        vst1q_f64(&dfi[nbr_coef - j].f[0], vsubq_f64(v_low, sf1i_j_low));
+                        vst1q_f64(&dfi[nbr_coef - j], vsubq_f64(v_low, sf1i_j_low));
                         vst1q_f64(&dfi[nbr_coef - j].f[2], vsubq_f64(v_high, sf1i_j_high));
                     }
                 }
@@ -5197,12 +5407,15 @@ protected:
         else {
             f[0] = x[0];
         }
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
     
-    void do_ifft_neon_f2(const simd_float2 *_Nonnull f, simd_float2 *_Nonnull x, bool do_scale = false)
+    void do_ifft_neon_f2(simd_float2 *_Nonnull f, simd_float2 *_Nonnull x, bool do_scale = false)
     {
         const float32x2_t c2 = vdup_n_f32(2.0f);
         float32x2_t mul = vdup_n_f32(1.0f);
+        
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
         
         // Initialize scaling factor
         if (unlikely(do_scale)) {
@@ -5430,11 +5643,14 @@ protected:
             // 1-point IFFT
             vst1_f32((float*)&x[0], vmul_f32(vld1_f32((float*)&f[0]), mul));
         }
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
     
-    void do_ifft_neon_f4(const simd_float4 *_Nonnull f, simd_float4 *_Nonnull x, bool do_scale = false)
+    void do_ifft_neon_f4(simd_float4 *_Nonnull f, simd_float4 *_Nonnull x, bool do_scale = false)
     {
         const float32x4_t c2 = vdupq_n_f32(2.0f);
+        
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
         
         // Initialize scaling factor
         float32x4_t mul = vdupq_n_f32(1.0f);
@@ -5474,17 +5690,17 @@ protected:
                     
                     // Process extreme coefficients
                     float32x4_t sfr_0 = vld1q_f32((float*)&sfr[0]);
-                    float32x4_t sfr_nbr_coef = vld1q_f32(&sfr[nbr_coef].f[0]);
+                    float32x4_t sfr_nbr_coef = vld1q_f32((float*)&sfr[nbr_coef]);
                     
                     vst1q_f32((float*)&df1r[0], vaddq_f32(sfr_0, sfr_nbr_coef));
-                    vst1q_f32(&df2r[0].f[0], vsubq_f32(sfr_0, sfr_nbr_coef));
+                    vst1q_f32((float*)&df2r, vsubq_f32(sfr_0, sfr_nbr_coef));
                     
                     // Process h_nbr_coef coefficients with c2 multiply
-                    float32x4_t sfr_h_nbr_coef = vld1q_f32(&sfr[h_nbr_coef].f[0]);
-                    float32x4_t sfi_h_nbr_coef = vld1q_f32(&sfi[h_nbr_coef].f[0]);
+                    float32x4_t sfr_h_nbr_coef = vld1q_f32((float*)&sfr[h_nbr_coef]);
+                    float32x4_t sfi_h_nbr_coef = vld1q_f32((float*)&sfi[h_nbr_coef]);
                     
-                    vst1q_f32(&df1r[h_nbr_coef].f[0], vmulq_f32(sfr_h_nbr_coef, c2));
-                    vst1q_f32(&df2r[h_nbr_coef].f[0], vmulq_f32(sfi_h_nbr_coef, c2));
+                    vst1q_f32((float*)&df1r[h_nbr_coef], vmulq_f32(sfr_h_nbr_coef, c2));
+                    vst1q_f32((float*)&df2r[h_nbr_coef], vmulq_f32(sfi_h_nbr_coef, c2));
                     
                     // Process conjugate complex numbers
                     auto df1i = &df1r[h_nbr_coef];
@@ -5514,13 +5730,13 @@ protected:
                         
                         // Load data with optimized memory access patterns
                         float32x4_t sfr_j = vld1q_f32((float*)&sfr[j]);
-                        float32x4_t sfi_neg_j = vld1q_f32(&sfi[-j].f[0]);
-                        float32x4_t sfi_j = vld1q_f32(&sfi[j].f[0]);
-                        float32x4_t sfi_nbr_j = vld1q_f32(&sfi[nbr_coef - j].f[0]);
+                        float32x4_t sfi_neg_j = vld1q_f32((float*)&sfi[-j]);
+                        float32x4_t sfi_j = vld1q_f32((float*)&sfi[j]);
+                        float32x4_t sfi_nbr_j = vld1q_f32((float*)&sfi[nbr_coef - j]);
                         
                         // Calculate df1r and df1i
                         vst1q_f32((float*)&df1r[j], vaddq_f32(sfr_j, sfi_neg_j));
-                        vst1q_f32(&df1i[j].f[0], vsubq_f32(sfi_j, sfi_nbr_j));
+                        vst1q_f32((float*)&df1i[j], vsubq_f32(sfi_j, sfi_nbr_j));
                         
                         // Calculate vr and vi
                         float32x4_t vr = vsubq_f32(sfr_j, sfi_neg_j);
@@ -5531,8 +5747,8 @@ protected:
                         float32x4_t df2i_j = vfmsq_f32(vmulq_f32(vi, c_vec), vr, s_vec);
                         
                         // Store final results
-                        vst1q_f32(&df2r[j].f[0], df2r_j);
-                        vst1q_f32(&df2i[j].f[0], df2i_j);
+                        vst1q_f32((float*)&df2r[j], df2r_j);
+                        vst1q_f32((float*)&df2i[j], df2i_j);
                     }
                 }
                 
@@ -5621,10 +5837,10 @@ protected:
                     float32x4_t b_3 = vmulq_f32(sf3, c2);
                     
                     // Apply scaling and store using bit-reversal
-                    vst1q_f32(&x[lut[0]].f[0], vmulq_f32(vaddq_f32(b_0, b_1), mul));
-                    vst1q_f32(&x[lut[1]].f[0], vmulq_f32(vsubq_f32(b_0, b_1), mul));
-                    vst1q_f32(&x[lut[2]].f[0], vmulq_f32(vaddq_f32(b_2, b_3), mul));
-                    vst1q_f32(&x[lut[3]].f[0], vmulq_f32(vsubq_f32(b_2, b_3), mul));
+                    vst1q_f32((float*)&x[lut[0]], vmulq_f32(vaddq_f32(b_0, b_1), mul));
+                    vst1q_f32((float*)&x[lut[1]], vmulq_f32(vsubq_f32(b_0, b_1), mul));
+                    vst1q_f32((float*)&x[lut[2]], vmulq_f32(vaddq_f32(b_2, b_3), mul));
+                    vst1q_f32((float*)&x[lut[3]], vmulq_f32(vsubq_f32(b_2, b_3), mul));
                 }
                 
                 // Process second 4 outputs
@@ -5641,10 +5857,10 @@ protected:
                     float32x4_t b_3 = vmulq_f32(sf7, c2);
                     
                     // Apply scaling and store using bit-reversal
-                    vst1q_f32(&x[lut[4]].f[0], vmulq_f32(vaddq_f32(b_0, b_1), mul));
-                    vst1q_f32(&x[lut[5]].f[0], vmulq_f32(vsubq_f32(b_0, b_1), mul));
-                    vst1q_f32(&x[lut[6]].f[0], vmulq_f32(vaddq_f32(b_2, b_3), mul));
-                    vst1q_f32(&x[lut[7]].f[0], vmulq_f32(vsubq_f32(b_2, b_3), mul));
+                    vst1q_f32((float*)&x[lut[4]], vmulq_f32(vaddq_f32(b_0, b_1), mul));
+                    vst1q_f32((float*)&x[lut[5]], vmulq_f32(vsubq_f32(b_0, b_1), mul));
+                    vst1q_f32((float*)&x[lut[6]], vmulq_f32(vaddq_f32(b_2, b_3), mul));
+                    vst1q_f32((float*)&x[lut[7]], vmulq_f32(vsubq_f32(b_2, b_3), mul));
                 }
             }
         }
@@ -5670,13 +5886,15 @@ protected:
             // 1-point IFFT
             vst1q_f32((float*)&x[0], vmulq_f32(vld1q_f32((float*)&f[0]), mul));
         }
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
     
-    void do_ifft_neon_d2(const simd_double2 *_Nonnull f, simd_double2 *_Nonnull x, bool do_scale = false)
+    void do_ifft_neon_d2(simd_double2 *_Nonnull f, simd_double2 *_Nonnull x, bool do_scale = false)
     {
         // Initialize constants
         const float64x2_t c2 = vdupq_n_f64(2.0);
         
+       //  for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
         // Initialize scaling factor
         float64x2_t mul = vdupq_n_f64(1.0);
         if (unlikely(do_scale)) {
@@ -5913,12 +6131,15 @@ protected:
             // 1-point IFFT
             vst1q_f64((double*)&x[0], vmulq_f64(vld1q_f64((double*)&f[0]), mul));
         }
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
     
-    void do_ifft_neon_d4(const simd_double4 *_Nonnull f, simd_double4 *_Nonnull x, bool do_scale = false)
+    void do_ifft_neon_d4(simd_double4 *_Nonnull f, simd_double4 *_Nonnull x, bool do_scale = false)
     {
         // Initialize constants
         const float64x2_t c2 = vdupq_n_f64(2.0);
+        
+       // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
         
         // Initialize scaling factor
         float64x2_t mul = vdupq_n_f64(1.0);
@@ -5959,24 +6180,24 @@ protected:
                     // Process extreme coefficients for double4
                     float64x2_t sfr_0_low = vld1q_f64((double*)&sfr[0]);
                     float64x2_t sfr_0_high = vld1q_f64((double*)&sfr[0] + 2);
-                    float64x2_t sfr_nbr_coef_low = vld1q_f64(&sfr[nbr_coef].f[0]);
-                    float64x2_t sfr_nbr_coef_high = vld1q_f64(&sfr[nbr_coef].f[2]);
+                    float64x2_t sfr_nbr_coef_low = vld1q_f64((double*)&sfr[nbr_coef]);
+                    float64x2_t sfr_nbr_coef_high = vld1q_f64((double*)&sfr[nbr_coef].f[2]);
                     
                     vst1q_f64((double*)&df1r[0], vaddq_f64(sfr_0_low, sfr_nbr_coef_low));
                     vst1q_f64((double*)&df1r[0] + 2, vaddq_f64(sfr_0_high, sfr_nbr_coef_high));
-                    vst1q_f64(&df2r[0].f[0], vsubq_f64(sfr_0_low, sfr_nbr_coef_low));
-                    vst1q_f64(&df2r[0].f[2], vsubq_f64(sfr_0_high, sfr_nbr_coef_high));
+                    vst1q_f64((double*)&df2r[0], vsubq_f64(sfr_0_low, sfr_nbr_coef_low));
+                    vst1q_f64((double*)&df2r[0] + 2, vsubq_f64(sfr_0_high, sfr_nbr_coef_high));
                     
                     // Process h_nbr_coef with c2 multiply
-                    float64x2_t sfr_h_nbr_coef_low = vld1q_f64(&sfr[h_nbr_coef].f[0]);
-                    float64x2_t sfr_h_nbr_coef_high = vld1q_f64(&sfr[h_nbr_coef].f[2]);
-                    float64x2_t sfi_h_nbr_coef_low = vld1q_f64(&sfi[h_nbr_coef].f[0]);
-                    float64x2_t sfi_h_nbr_coef_high = vld1q_f64(&sfi[h_nbr_coef].f[2]);
+                    float64x2_t sfr_h_nbr_coef_low = vld1q_f64((double*)&sfr[h_nbr_coef]);
+                    float64x2_t sfr_h_nbr_coef_high = vld1q_f64((double*)&sfr[h_nbr_coef] + 2);
+                    float64x2_t sfi_h_nbr_coef_low = vld1q_f64((double*)&sfi[h_nbr_coef]);
+                    float64x2_t sfi_h_nbr_coef_high = vld1q_f64((double*)&sfi[h_nbr_coef] + 2);
                     
-                    vst1q_f64(&df1r[h_nbr_coef].f[0], vmulq_f64(sfr_h_nbr_coef_low, c2));
-                    vst1q_f64(&df1r[h_nbr_coef].f[2], vmulq_f64(sfr_h_nbr_coef_high, c2));
-                    vst1q_f64(&df2r[h_nbr_coef].f[0], vmulq_f64(sfi_h_nbr_coef_low, c2));
-                    vst1q_f64(&df2r[h_nbr_coef].f[2], vmulq_f64(sfi_h_nbr_coef_high, c2));
+                    vst1q_f64((double*)&df1r[h_nbr_coef], vmulq_f64(sfr_h_nbr_coef_low, c2));
+                    vst1q_f64((double*)&df1r[h_nbr_coef] + 2, vmulq_f64(sfr_h_nbr_coef_high, c2));
+                    vst1q_f64((double*)&df2r[h_nbr_coef], vmulq_f64(sfi_h_nbr_coef_low, c2));
+                    vst1q_f64((double*)&df2r[h_nbr_coef] + 2, vmulq_f64(sfi_h_nbr_coef_high, c2));
                     
                     // Process conjugate complex numbers
                     auto df1i = &df1r[h_nbr_coef];
@@ -6007,18 +6228,18 @@ protected:
                         // Load data with optimized patterns for double4
                         float64x2_t sfr_j_low = vld1q_f64((double*)&sfr[j]);
                         float64x2_t sfr_j_high = vld1q_f64((double*)&sfr[j] + 2);
-                        float64x2_t sfi_neg_j_low = vld1q_f64(&sfi[-j].f[0]);
-                        float64x2_t sfi_neg_j_high = vld1q_f64(&sfi[-j].f[2]);
-                        float64x2_t sfi_j_low = vld1q_f64(&sfi[j].f[0]);
-                        float64x2_t sfi_j_high = vld1q_f64(&sfi[j].f[2]);
-                        float64x2_t sfi_nbr_j_low = vld1q_f64(&sfi[nbr_coef-j].f[0]);
-                        float64x2_t sfi_nbr_j_high = vld1q_f64(&sfi[nbr_coef-j].f[2]);
+                        float64x2_t sfi_neg_j_low = vld1q_f64((double*)&sfi[-j]);
+                        float64x2_t sfi_neg_j_high = vld1q_f64((double*)&sfi[-j] + 2);
+                        float64x2_t sfi_j_low = vld1q_f64((double*)&sfi[j]);
+                        float64x2_t sfi_j_high = vld1q_f64((double*)&sfi[j] + 2);
+                        float64x2_t sfi_nbr_j_low = vld1q_f64((double*)&sfi[nbr_coef-j]);
+                        float64x2_t sfi_nbr_j_high = vld1q_f64((double*)&sfi[nbr_coef-j] + 2);
                         
                         // Calculate df1r and df1i
                         vst1q_f64((double*)&df1r[j], vaddq_f64(sfr_j_low, sfi_neg_j_low));
                         vst1q_f64((double*)&df1r[j] + 2, vaddq_f64(sfr_j_high, sfi_neg_j_high));
-                        vst1q_f64(&df1i[j].f[0], vsubq_f64(sfi_j_low, sfi_nbr_j_low));
-                        vst1q_f64(&df1i[j].f[2], vsubq_f64(sfi_j_high, sfi_nbr_j_high));
+                        vst1q_f64((double*)&df1i[j], vsubq_f64(sfi_j_low, sfi_nbr_j_low));
+                        vst1q_f64((double*)&df1i[j] + 2, vsubq_f64(sfi_j_high, sfi_nbr_j_high));
                         
                         // Calculate vr and vi
                         float64x2_t vr_low = vsubq_f64(sfr_j_low, sfi_neg_j_low);
@@ -6045,10 +6266,10 @@ protected:
                         float64x2_t df2i_j_high = vsubq_f64(vi_c_high, vr_s_high);
                         
                         // Store results
-                        vst1q_f64(&df2r[j].f[0], df2r_j_low);
-                        vst1q_f64(&df2r[j].f[2], df2r_j_high);
-                        vst1q_f64(&df2i[j].f[0], df2i_j_low);
-                        vst1q_f64(&df2i[j].f[2], df2i_j_high);
+                        vst1q_f64((double*)&df2r[j], df2r_j_low);
+                        vst1q_f64((double*)&df2r[j] + 2, df2r_j_high);
+                        vst1q_f64((double*)&df2i[j], df2i_j_low);
+                        vst1q_f64((double*)&df2i[j] + 2, df2i_j_high);
                     }
                 }
                 
@@ -6174,14 +6395,14 @@ protected:
                     float64x2_t b_3_high = vmulq_f64(sf3_high, c2);
                     
                     // Store results with scaling and bit reversal
-                    vst1q_f64(&x[lut[0]].f[0], vmulq_f64(vaddq_f64(b_0_low, b_1_low), mul));
-                    vst1q_f64(&x[lut[0]].f[2], vmulq_f64(vaddq_f64(b_0_high, b_1_high), mul));
-                    vst1q_f64(&x[lut[1]].f[0], vmulq_f64(vsubq_f64(b_0_low, b_1_low), mul));
-                    vst1q_f64(&x[lut[1]].f[2], vmulq_f64(vsubq_f64(b_0_high, b_1_high), mul));
-                    vst1q_f64(&x[lut[2]].f[0], vmulq_f64(vaddq_f64(b_2_low, b_3_low), mul));
-                    vst1q_f64(&x[lut[2]].f[2], vmulq_f64(vaddq_f64(b_2_high, b_3_high), mul));
-                    vst1q_f64(&x[lut[3]].f[0], vmulq_f64(vsubq_f64(b_2_low, b_3_low), mul));
-                    vst1q_f64(&x[lut[3]].f[2], vmulq_f64(vsubq_f64(b_2_high, b_3_high), mul));
+                    vst1q_f64((double*)&x[lut[0]], vmulq_f64(vaddq_f64(b_0_low, b_1_low), mul));
+                    vst1q_f64((double*)&x[lut[0]] + 2, vmulq_f64(vaddq_f64(b_0_high, b_1_high), mul));
+                    vst1q_f64((double*)&x[lut[1]], vmulq_f64(vsubq_f64(b_0_low, b_1_low), mul));
+                    vst1q_f64((double*)&x[lut[1]] + 2, vmulq_f64(vsubq_f64(b_0_high, b_1_high), mul));
+                    vst1q_f64((double*)&x[lut[2]], vmulq_f64(vaddq_f64(b_2_low, b_3_low), mul));
+                    vst1q_f64((double*)&x[lut[2]] + 2, vmulq_f64(vaddq_f64(b_2_high, b_3_high), mul));
+                    vst1q_f64((double*)&x[lut[3]], vmulq_f64(vsubq_f64(b_2_low, b_3_low), mul));
+                    vst1q_f64((double*)&x[lut[3]] + 2, vmulq_f64(vsubq_f64(b_2_high, b_3_high), mul));
                 }
                 
                 // Process second 4 outputs
@@ -6206,14 +6427,14 @@ protected:
                     float64x2_t b_3_high = vmulq_f64(sf7_high, c2);
                     
                     // Store results with scaling and bit reversal
-                    vst1q_f64(&x[lut[4]].f[0], vmulq_f64(vaddq_f64(b_0_low, b_1_low), mul));
-                    vst1q_f64(&x[lut[4]].f[2], vmulq_f64(vaddq_f64(b_0_high, b_1_high), mul));
-                    vst1q_f64(&x[lut[5]].f[0], vmulq_f64(vsubq_f64(b_0_low, b_1_low), mul));
-                    vst1q_f64(&x[lut[5]].f[2], vmulq_f64(vsubq_f64(b_0_high, b_1_high), mul));
-                    vst1q_f64(&x[lut[6]].f[0], vmulq_f64(vaddq_f64(b_2_low, b_3_low), mul));
-                    vst1q_f64(&x[lut[6]].f[2], vmulq_f64(vaddq_f64(b_2_high, b_3_high), mul));
-                    vst1q_f64(&x[lut[7]].f[0], vmulq_f64(vsubq_f64(b_2_low, b_3_low), mul));
-                    vst1q_f64(&x[lut[7]].f[2], vmulq_f64(vsubq_f64(b_2_high, b_3_high), mul));
+                    vst1q_f64((double*)&x[lut[4]], vmulq_f64(vaddq_f64(b_0_low, b_1_low), mul));
+                    vst1q_f64((double*)&x[lut[4]] + 2, vmulq_f64(vaddq_f64(b_0_high, b_1_high), mul));
+                    vst1q_f64((double*)&x[lut[5]], vmulq_f64(vsubq_f64(b_0_low, b_1_low), mul));
+                    vst1q_f64((double*)&x[lut[5]] + 2, vmulq_f64(vsubq_f64(b_0_high, b_1_high), mul));
+                    vst1q_f64((double*)&x[lut[6]], vmulq_f64(vaddq_f64(b_2_low, b_3_low), mul));
+                    vst1q_f64((double*)&x[lut[6]] + 2, vmulq_f64(vaddq_f64(b_2_high, b_3_high), mul));
+                    vst1q_f64((double*)&x[lut[7]], vmulq_f64(vsubq_f64(b_2_low, b_3_low), mul));
+                    vst1q_f64((double*)&x[lut[7]] + 2, vmulq_f64(vsubq_f64(b_2_high, b_3_high), mul));
                 }
             }
         }
@@ -6251,11 +6472,14 @@ protected:
             vst1q_f64((double*)&x[0], vmulq_f64(vld1q_f64((double*)&f[0]), mul));
             vst1q_f64((double*)&x[0] + 2, vmulq_f64(vld1q_f64((double*)&f[0] + 2), mul));
         }
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
     
-    void do_ifft_neon_f8(const simd_float8 *_Nonnull f, simd_float8 *_Nonnull x, bool do_scale = false)
+    void do_ifft_neon_f8(simd_float8 *_Nonnull f, simd_float8 *_Nonnull x, bool do_scale = false)
     {
         const float32x4_t c2 = vdupq_n_f32(2.0f);
+        
+       // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
         
         // Initialize scaling factor
         float32x4_t mul = vdupq_n_f32(1.0f);
@@ -6295,27 +6519,27 @@ protected:
                     }
                     
                     // Optimized extreme coefficient processing
-                    float32x4_t sfr_0_low = vld1q_f32(&sfr[0].f[0]);
-                    float32x4_t sfr_0_high = vld1q_f32(&sfr[0].f[4]);
-                    float32x4_t sfr_nbr_coef_low = vld1q_f32(&sfr[nbr_coef].f[0]);
-                    float32x4_t sfr_nbr_coef_high = vld1q_f32(&sfr[nbr_coef].f[4]);
+                    float32x4_t sfr_0_low = vld1q_f32((float*)&sfr[0]);
+                    float32x4_t sfr_0_high = vld1q_f32((float*)&sfr[0] + 4);
+                    float32x4_t sfr_nbr_coef_low = vld1q_f32((float*)&sfr[nbr_coef]);
+                    float32x4_t sfr_nbr_coef_high = vld1q_f32((float*)&sfr[nbr_coef] + 4);
                     
                     // Process and store immediately
-                    vst1q_f32(&df1r[0].f[0], vaddq_f32(sfr_0_low, sfr_nbr_coef_low));
-                    vst1q_f32(&df1r[0].f[4], vaddq_f32(sfr_0_high, sfr_nbr_coef_high));
-                    vst1q_f32(&df2r[0].f[0], vsubq_f32(sfr_0_low, sfr_nbr_coef_low));
-                    vst1q_f32(&df2r[0].f[4], vsubq_f32(sfr_0_high, sfr_nbr_coef_high));
+                    vst1q_f32((float*)&df1r[0], vaddq_f32(sfr_0_low, sfr_nbr_coef_low));
+                    vst1q_f32((float*)&df1r[0] + 4, vaddq_f32(sfr_0_high, sfr_nbr_coef_high));
+                    vst1q_f32((float*)&df2r[0], vsubq_f32(sfr_0_low, sfr_nbr_coef_low));
+                    vst1q_f32((float*)&df2r[0] + 4, vsubq_f32(sfr_0_high, sfr_nbr_coef_high));
                     
                     // Load and process h_nbr_coef values with c2 multiplication
-                    float32x4_t sfr_h_nbr_coef_low = vld1q_f32(&sfr[h_nbr_coef].f[0]);
-                    float32x4_t sfr_h_nbr_coef_high = vld1q_f32(&sfr[h_nbr_coef].f[4]);
-                    float32x4_t sfi_h_nbr_coef_low = vld1q_f32(&sfi[h_nbr_coef].f[0]);
-                    float32x4_t sfi_h_nbr_coef_high = vld1q_f32(&sfi[h_nbr_coef].f[4]);
+                    float32x4_t sfr_h_nbr_coef_low = vld1q_f32((float*)&sfr[h_nbr_coef]);
+                    float32x4_t sfr_h_nbr_coef_high = vld1q_f32((float*)&sfr[h_nbr_coef] + 4);
+                    float32x4_t sfi_h_nbr_coef_low = vld1q_f32((float*)&sfi[h_nbr_coef]);
+                    float32x4_t sfi_h_nbr_coef_high = vld1q_f32((float*)&sfi[h_nbr_coef] + 4);
                     
-                    vst1q_f32(&df1r[h_nbr_coef].f[0], vmulq_f32(sfr_h_nbr_coef_low, c2));
-                    vst1q_f32(&df1r[h_nbr_coef].f[4], vmulq_f32(sfr_h_nbr_coef_high, c2));
-                    vst1q_f32(&df2r[h_nbr_coef].f[0], vmulq_f32(sfi_h_nbr_coef_low, c2));
-                    vst1q_f32(&df2r[h_nbr_coef].f[4], vmulq_f32(sfi_h_nbr_coef_high, c2));
+                    vst1q_f32((float*)&df1r[h_nbr_coef], vmulq_f32(sfr_h_nbr_coef_low, c2));
+                    vst1q_f32((float*)&df1r[h_nbr_coef] + 4, vmulq_f32(sfr_h_nbr_coef_high, c2));
+                    vst1q_f32((float*)&df2r[h_nbr_coef], vmulq_f32(sfi_h_nbr_coef_low, c2));
+                    vst1q_f32((float*)&df2r[h_nbr_coef] + 4, vmulq_f32(sfi_h_nbr_coef_high, c2));
                     
                     // Process conjugate complex numbers
                     auto df1i = &df1r[h_nbr_coef];
@@ -6346,20 +6570,20 @@ protected:
                         float32x4_t s_vec = vdupq_n_f32(s);
                         
                         // Load values with grouping for cache efficiency
-                        float32x4_t sfr_j_low = vld1q_f32(&sfr[j].f[0]);
-                        float32x4_t sfr_j_high = vld1q_f32(&sfr[j].f[4]);
-                        float32x4_t sfi_neg_j_low = vld1q_f32(&sfi[-j].f[0]);
-                        float32x4_t sfi_neg_j_high = vld1q_f32(&sfi[-j].f[4]);
-                        float32x4_t sfi_j_low = vld1q_f32(&sfi[j].f[0]);
-                        float32x4_t sfi_j_high = vld1q_f32(&sfi[j].f[4]);
-                        float32x4_t sfi_nbr_j_low = vld1q_f32(&sfi[nbr_coef - j].f[0]);
-                        float32x4_t sfi_nbr_j_high = vld1q_f32(&sfi[nbr_coef - j].f[4]);
+                        float32x4_t sfr_j_low = vld1q_f32((float*)&sfr[j]);
+                        float32x4_t sfr_j_high = vld1q_f32((float*)&sfr[j] + 4);
+                        float32x4_t sfi_neg_j_low = vld1q_f32((float*)&sfi[-j]);
+                        float32x4_t sfi_neg_j_high = vld1q_f32((float*)&sfi[-j] + 4);
+                        float32x4_t sfi_j_low = vld1q_f32((float*)&sfi[j]);
+                        float32x4_t sfi_j_high = vld1q_f32((float*)&sfi[j] + 4);
+                        float32x4_t sfi_nbr_j_low = vld1q_f32((float*)&sfi[nbr_coef - j]);
+                        float32x4_t sfi_nbr_j_high = vld1q_f32((float*)&sfi[nbr_coef - j] + 4);
                         
                         // Compute df1r and df1i values
-                        vst1q_f32(&df1r[j].f[0], vaddq_f32(sfr_j_low, sfi_neg_j_low));
-                        vst1q_f32(&df1r[j].f[4], vaddq_f32(sfr_j_high, sfi_neg_j_high));
-                        vst1q_f32(&df1i[j].f[0], vsubq_f32(sfi_j_low, sfi_nbr_j_low));
-                        vst1q_f32(&df1i[j].f[4], vsubq_f32(sfi_j_high, sfi_nbr_j_high));
+                        vst1q_f32((float*)&df1r[j], vaddq_f32(sfr_j_low, sfi_neg_j_low));
+                        vst1q_f32((float*)&df1r[j] + 4, vaddq_f32(sfr_j_high, sfi_neg_j_high));
+                        vst1q_f32((float*)&df1i[j], vsubq_f32(sfi_j_low, sfi_nbr_j_low));
+                        vst1q_f32((float*)&df1i[j] + 4, vsubq_f32(sfi_j_high, sfi_nbr_j_high));
                         
                         // Calculate vr and vi
                         float32x4_t vr_low = vsubq_f32(sfr_j_low, sfi_neg_j_low);
@@ -6375,10 +6599,10 @@ protected:
                         float32x4_t df2i_j_high = vfmsq_f32(vmulq_f32(vi_high, c_vec), vr_high, s_vec);
                         
                         // Store with optimized memory access
-                        vst1q_f32(&df2r[j].f[0], df2r_j_low);
-                        vst1q_f32(&df2r[j].f[4], df2r_j_high);
-                        vst1q_f32(&df2i[j].f[0], df2i_j_low);
-                        vst1q_f32(&df2i[j].f[4], df2i_j_high);
+                        vst1q_f32((float*)&df2r[j], df2r_j_low);
+                        vst1q_f32((float*)&df2r[j] + 4, df2r_j_high);
+                        vst1q_f32((float*)&df2i[j], df2i_j_low);
+                        vst1q_f32((float*)&df2i[j] + 4, df2i_j_high);
                     }
                 }
                 
@@ -6406,10 +6630,10 @@ protected:
                 }
                 
                 // Load data with interleaved prefetching and computation
-                float32x4_t f0_low = vld1q_f32(&sf2[0].f[0]);
-                float32x4_t f0_high = vld1q_f32(&sf2[0].f[4]);
-                float32x4_t f4_low = vld1q_f32(&sf2[4].f[0]);
-                float32x4_t f4_high = vld1q_f32(&sf2[4].f[4]);
+                float32x4_t f0_low = vld1q_f32((float*)&sf2[0]);
+                float32x4_t f0_high = vld1q_f32((float*)&sf2[0] + 4);
+                float32x4_t f4_low = vld1q_f32((float*)&sf2[4]);
+                float32x4_t f4_high = vld1q_f32((float*)&sf2[4] + 4);
                 
                 // Sum and difference computation
                 float32x4_t sum04_low = vaddq_f32(f0_low, f4_low);
@@ -6418,38 +6642,38 @@ protected:
                 float32x4_t diff04_high = vsubq_f32(f0_high, f4_high);
                 
                 // Load c2 multiplications
-                float32x4_t f2_low = vld1q_f32(&sf2[2].f[0]);
-                float32x4_t f2_high = vld1q_f32(&sf2[2].f[4]);
-                float32x4_t f6_low = vld1q_f32(&sf2[6].f[0]);
-                float32x4_t f6_high = vld1q_f32(&sf2[6].f[4]);
+                float32x4_t f2_low = vld1q_f32((float*)&sf2[2]);
+                float32x4_t f2_high = vld1q_f32((float*)&sf2[2] + 4);
+                float32x4_t f6_low = vld1q_f32((float*)&sf2[6]);
+                float32x4_t f6_high = vld1q_f32((float*)&sf2[6] + 4);
                 
                 // Store first set of results
-                vst1q_f32(&df2[0].f[0], sum04_low);
-                vst1q_f32(&df2[0].f[4], sum04_high);
-                vst1q_f32(&df2[4].f[0], diff04_low);
-                vst1q_f32(&df2[4].f[4], diff04_high);
+                vst1q_f32((float*)&df2[0], sum04_low);
+                vst1q_f32((float*)&df2[0] + 4, sum04_high);
+                vst1q_f32((float*)&df2[4], diff04_low);
+                vst1q_f32((float*)&df2[4] + 4, diff04_high);
                 
                 // Load additional data
-                float32x4_t f1_low = vld1q_f32(&sf2[1].f[0]);
-                float32x4_t f1_high = vld1q_f32(&sf2[1].f[4]);
-                float32x4_t f3_low = vld1q_f32(&sf2[3].f[0]);
-                float32x4_t f3_high = vld1q_f32(&sf2[3].f[4]);
-                float32x4_t f5_low = vld1q_f32(&sf2[5].f[0]);
-                float32x4_t f5_high = vld1q_f32(&sf2[5].f[4]);
-                float32x4_t f7_low = vld1q_f32(&sf2[7].f[0]);
-                float32x4_t f7_high = vld1q_f32(&sf2[7].f[4]);
+                float32x4_t f1_low = vld1q_f32((float*)&sf2[1]);
+                float32x4_t f1_high = vld1q_f32((float*)&sf2[1] + 4);
+                float32x4_t f3_low = vld1q_f32((float*)&sf2[3]);
+                float32x4_t f3_high = vld1q_f32((float*)&sf2[3] + 4);
+                float32x4_t f5_low = vld1q_f32((float*)&sf2[5]);
+                float32x4_t f5_high = vld1q_f32((float*)&sf2[5] + 4);
+                float32x4_t f7_low = vld1q_f32((float*)&sf2[7]);
+                float32x4_t f7_high = vld1q_f32((float*)&sf2[7] + 4);
                 
                 // Store c2 multiplications
-                vst1q_f32(&df2[2].f[0], vmulq_f32(f2_low, c2));
-                vst1q_f32(&df2[2].f[4], vmulq_f32(f2_high, c2));
-                vst1q_f32(&df2[6].f[0], vmulq_f32(f6_low, c2));
-                vst1q_f32(&df2[6].f[4], vmulq_f32(f6_high, c2));
+                vst1q_f32((float*)&df2[2], vmulq_f32(f2_low, c2));
+                vst1q_f32((float*)&df2[2] + 4, vmulq_f32(f2_high, c2));
+                vst1q_f32((float*)&df2[6], vmulq_f32(f6_low, c2));
+                vst1q_f32((float*)&df2[6] + 4, vmulq_f32(f6_high, c2));
                 
                 // Process sum and difference with optimized memory patterns
-                vst1q_f32(&df2[1].f[0], vaddq_f32(f1_low, f3_low));
-                vst1q_f32(&df2[1].f[4], vaddq_f32(f1_high, f3_high));
-                vst1q_f32(&df2[3].f[0], vsubq_f32(f5_low, f7_low));
-                vst1q_f32(&df2[3].f[4], vsubq_f32(f5_high, f7_high));
+                vst1q_f32((float*)&df2[1], vaddq_f32(f1_low, f3_low));
+                vst1q_f32((float*)&df2[1] + 4, vaddq_f32(f1_high, f3_high));
+                vst1q_f32((float*)&df2[3], vsubq_f32(f5_low, f7_low));
+                vst1q_f32((float*)&df2[3] + 4, vsubq_f32(f5_high, f7_high));
                 
                 // Compute vr and vi for SQ2_2 calculations
                 float32x4_t vr_low = vsubq_f32(f1_low, f3_low);
@@ -6458,10 +6682,10 @@ protected:
                 float32x4_t vi_high = vaddq_f32(f5_high, f7_high);
                 
                 // Optimized SQ2_2 multiplication and store
-                vst1q_f32(&df2[5].f[0], vmulq_f32(vaddq_f32(vr_low, vi_low), sq2_2));
-                vst1q_f32(&df2[5].f[4], vmulq_f32(vaddq_f32(vr_high, vi_high), sq2_2));
-                vst1q_f32(&df2[7].f[0], vmulq_f32(vsubq_f32(vi_low, vr_low), sq2_2));
-                vst1q_f32(&df2[7].f[4], vmulq_f32(vsubq_f32(vi_high, vr_high), sq2_2));
+                vst1q_f32((float*)&df2[5], vmulq_f32(vaddq_f32(vr_low, vi_low), sq2_2));
+                vst1q_f32((float*)&df2[5] + 4, vmulq_f32(vaddq_f32(vr_high, vi_high), sq2_2));
+                vst1q_f32((float*)&df2[7], vmulq_f32(vsubq_f32(vi_low, vr_low), sq2_2));
+                vst1q_f32((float*)&df2[7] + 4, vmulq_f32(vsubq_f32(vi_high, vr_high), sq2_2));
             }
             
             // Penultimate and last pass optimized with bit reversal
@@ -6478,14 +6702,14 @@ protected:
                 
                 // Process first 4 outputs with FMA optimizations
                 {
-                    float32x4_t sf0_low = vld1q_f32(&sf2[0].f[0]);
-                    float32x4_t sf0_high = vld1q_f32(&sf2[0].f[4]);
-                    float32x4_t sf1_low = vld1q_f32(&sf2[1].f[0]);
-                    float32x4_t sf1_high = vld1q_f32(&sf2[1].f[4]);
-                    float32x4_t sf2val_low = vld1q_f32(&sf2[2].f[0]);
-                    float32x4_t sf2val_high = vld1q_f32(&sf2[2].f[4]);
-                    float32x4_t sf3_low = vld1q_f32(&sf2[3].f[0]);
-                    float32x4_t sf3_high = vld1q_f32(&sf2[3].f[4]);
+                    float32x4_t sf0_low = vld1q_f32((float*)&sf2[0]);
+                    float32x4_t sf0_high = vld1q_f32((float*)&sf2[0] + 4);
+                    float32x4_t sf1_low = vld1q_f32((float*)&sf2[1]);
+                    float32x4_t sf1_high = vld1q_f32((float*)&sf2[1] + 4);
+                    float32x4_t sf2val_low = vld1q_f32((float*)&sf2[2]);
+                    float32x4_t sf2val_high = vld1q_f32((float*)&sf2[2] + 4);
+                    float32x4_t sf3_low = vld1q_f32((float*)&sf2[3]);
+                    float32x4_t sf3_high = vld1q_f32((float*)&sf2[3] + 4);
                     
                     // Calculate butterfly values using FMA operations
                     float32x4_t b_0_low = vaddq_f32(sf0_low, sf2val_low);
@@ -6498,26 +6722,26 @@ protected:
                     float32x4_t b_3_high = vmulq_f32(sf3_high, c2);
                     
                     // Apply scaling and store with bit-reversal
-                    vst1q_f32(&x[lut[0]].f[0], vmulq_f32(vaddq_f32(b_0_low, b_1_low), mul));
-                    vst1q_f32(&x[lut[0]].f[4], vmulq_f32(vaddq_f32(b_0_high, b_1_high), mul));
-                    vst1q_f32(&x[lut[1]].f[0], vmulq_f32(vsubq_f32(b_0_low, b_1_low), mul));
-                    vst1q_f32(&x[lut[1]].f[4], vmulq_f32(vsubq_f32(b_0_high, b_1_high), mul));
-                    vst1q_f32(&x[lut[2]].f[0], vmulq_f32(vaddq_f32(b_2_low, b_3_low), mul));
-                    vst1q_f32(&x[lut[2]].f[4], vmulq_f32(vaddq_f32(b_2_high, b_3_high), mul));
-                    vst1q_f32(&x[lut[3]].f[0], vmulq_f32(vsubq_f32(b_2_low, b_3_low), mul));
-                    vst1q_f32(&x[lut[3]].f[4], vmulq_f32(vsubq_f32(b_2_high, b_3_high), mul));
+                    vst1q_f32((float*)&x[lut[0]], vmulq_f32(vaddq_f32(b_0_low, b_1_low), mul));
+                    vst1q_f32((float*)&x[lut[0]] + 4, vmulq_f32(vaddq_f32(b_0_high, b_1_high), mul));
+                    vst1q_f32((float*)&x[lut[1]], vmulq_f32(vsubq_f32(b_0_low, b_1_low), mul));
+                    vst1q_f32((float*)&x[lut[1]] + 4, vmulq_f32(vsubq_f32(b_0_high, b_1_high), mul));
+                    vst1q_f32((float*)&x[lut[2]], vmulq_f32(vaddq_f32(b_2_low, b_3_low), mul));
+                    vst1q_f32((float*)&x[lut[2]] + 4, vmulq_f32(vaddq_f32(b_2_high, b_3_high), mul));
+                    vst1q_f32((float*)&x[lut[3]], vmulq_f32(vsubq_f32(b_2_low, b_3_low), mul));
+                    vst1q_f32((float*)&x[lut[3]] + 4, vmulq_f32(vsubq_f32(b_2_high, b_3_high), mul));
                 }
                 
                 // Process second 4 outputs with similar optimizations
                 {
-                    float32x4_t sf4_low = vld1q_f32(&sf2[4].f[0]);
-                    float32x4_t sf4_high = vld1q_f32(&sf2[4].f[4]);
-                    float32x4_t sf5_low = vld1q_f32(&sf2[5].f[0]);
-                    float32x4_t sf5_high = vld1q_f32(&sf2[5].f[4]);
-                    float32x4_t sf6_low = vld1q_f32(&sf2[6].f[0]);
-                    float32x4_t sf6_high = vld1q_f32(&sf2[6].f[4]);
-                    float32x4_t sf7_low = vld1q_f32(&sf2[7].f[0]);
-                    float32x4_t sf7_high = vld1q_f32(&sf2[7].f[4]);
+                    float32x4_t sf4_low = vld1q_f32((float*)&sf2[4]);
+                    float32x4_t sf4_high = vld1q_f32((float*)&sf2[4] + 4);
+                    float32x4_t sf5_low = vld1q_f32((float*)&sf2[5]);
+                    float32x4_t sf5_high = vld1q_f32((float*)&sf2[5] + 4);
+                    float32x4_t sf6_low = vld1q_f32((float*)&sf2[6]);
+                    float32x4_t sf6_high = vld1q_f32((float*)&sf2[6] + 4);
+                    float32x4_t sf7_low = vld1q_f32((float*)&sf2[7]);
+                    float32x4_t sf7_high = vld1q_f32((float*)&sf2[7] + 4);
                     
                     float32x4_t b_0_low = vaddq_f32(sf4_low, sf6_low);
                     float32x4_t b_0_high = vaddq_f32(sf4_high, sf6_high);
@@ -6528,57 +6752,60 @@ protected:
                     float32x4_t b_3_low = vmulq_f32(sf7_low, c2);
                     float32x4_t b_3_high = vmulq_f32(sf7_high, c2);
                     
-                    vst1q_f32(&x[lut[4]].f[0], vmulq_f32(vaddq_f32(b_0_low, b_1_low), mul));
-                    vst1q_f32(&x[lut[4]].f[4], vmulq_f32(vaddq_f32(b_0_high, b_1_high), mul));
-                    vst1q_f32(&x[lut[5]].f[0], vmulq_f32(vsubq_f32(b_0_low, b_1_low), mul));
-                    vst1q_f32(&x[lut[5]].f[4], vmulq_f32(vsubq_f32(b_0_high, b_1_high), mul));
-                    vst1q_f32(&x[lut[6]].f[0], vmulq_f32(vaddq_f32(b_2_low, b_3_low), mul));
-                    vst1q_f32(&x[lut[6]].f[4], vmulq_f32(vaddq_f32(b_2_high, b_3_high), mul));
-                    vst1q_f32(&x[lut[7]].f[0], vmulq_f32(vsubq_f32(b_2_low, b_3_low), mul));
-                    vst1q_f32(&x[lut[7]].f[4], vmulq_f32(vsubq_f32(b_2_high, b_3_high), mul));
+                    vst1q_f32((float*)&x[lut[4]], vmulq_f32(vaddq_f32(b_0_low, b_1_low), mul));
+                    vst1q_f32((float*)&x[lut[4]] + 4, vmulq_f32(vaddq_f32(b_0_high, b_1_high), mul));
+                    vst1q_f32((float*)&x[lut[5]], vmulq_f32(vsubq_f32(b_0_low, b_1_low), mul));
+                    vst1q_f32((float*)&x[lut[5]] + 4, vmulq_f32(vsubq_f32(b_0_high, b_1_high), mul));
+                    vst1q_f32((float*)&x[lut[6]], vmulq_f32(vaddq_f32(b_2_low, b_3_low), mul));
+                    vst1q_f32((float*)&x[lut[6]] + 4, vmulq_f32(vaddq_f32(b_2_high, b_3_high), mul));
+                    vst1q_f32((float*)&x[lut[7]], vmulq_f32(vsubq_f32(b_2_low, b_3_low), mul));
+                    vst1q_f32((float*)&x[lut[7]] + 4, vmulq_f32(vsubq_f32(b_2_high, b_3_high), mul));
                 }
             }
         }
         // Special cases for small IFFTs with optimized FMA
         else if (unlikely(_nbr_bits == 2)) {
             // 4-point IFFT optimized with vectorized operations
-            const float32x4_t b_0_low = vaddq_f32(vld1q_f32(&f[0].f[0]), vld1q_f32(&f[2].f[0]));
-            const float32x4_t b_0_high = vaddq_f32(vld1q_f32(&f[0].f[4]), vld1q_f32(&f[2].f[4]));
-            const float32x4_t b_2_low = vsubq_f32(vld1q_f32(&f[0].f[0]), vld1q_f32(&f[2].f[0]));
-            const float32x4_t b_2_high = vsubq_f32(vld1q_f32(&f[0].f[4]), vld1q_f32(&f[2].f[4]));
+            const float32x4_t b_0_low = vaddq_f32(vld1q_f32((float*)&f[0]), vld1q_f32((float*)&f[2]));
+            const float32x4_t b_0_high = vaddq_f32(vld1q_f32((float*)&f[0] + 4), vld1q_f32((float*)&f[2] + 4));
+            const float32x4_t b_2_low = vsubq_f32(vld1q_f32((float*)&f[0]), vld1q_f32((float*)&f[2]));
+            const float32x4_t b_2_high = vsubq_f32(vld1q_f32((float*)&f[0] + 4), vld1q_f32((float*)&f[2] + 4));
             
-            const float32x4_t f1_c2_low = vmulq_f32(vld1q_f32(&f[1].f[0]), c2);
-            const float32x4_t f1_c2_high = vmulq_f32(vld1q_f32(&f[1].f[4]), c2);
-            const float32x4_t f3_c2_low = vmulq_f32(vld1q_f32(&f[3].f[0]), c2);
-            const float32x4_t f3_c2_high = vmulq_f32(vld1q_f32(&f[3].f[4]), c2);
+            const float32x4_t f1_c2_low = vmulq_f32(vld1q_f32((float*)&f[1]), c2);
+            const float32x4_t f1_c2_high = vmulq_f32(vld1q_f32((float*)&f[1] + 4), c2);
+            const float32x4_t f3_c2_low = vmulq_f32(vld1q_f32((float*)&f[3]), c2);
+            const float32x4_t f3_c2_high = vmulq_f32(vld1q_f32((float*)&f[3] + 4), c2);
             
-            vst1q_f32(&x[0].f[0], vmulq_f32(vaddq_f32(b_0_low, f1_c2_low), mul));
-            vst1q_f32(&x[0].f[4], vmulq_f32(vaddq_f32(b_0_high, f1_c2_high), mul));
-            vst1q_f32(&x[2].f[0], vmulq_f32(vsubq_f32(b_0_low, f1_c2_low), mul));
-            vst1q_f32(&x[2].f[4], vmulq_f32(vsubq_f32(b_0_high, f1_c2_high), mul));
-            vst1q_f32(&x[1].f[0], vmulq_f32(vaddq_f32(b_2_low, f3_c2_low), mul));
-            vst1q_f32(&x[1].f[4], vmulq_f32(vaddq_f32(b_2_high, f3_c2_high), mul));
-            vst1q_f32(&x[3].f[0], vmulq_f32(vsubq_f32(b_2_low, f3_c2_low), mul));
-            vst1q_f32(&x[3].f[4], vmulq_f32(vsubq_f32(b_2_high, f3_c2_high), mul));
+            vst1q_f32((float*)&x[0], vmulq_f32(vaddq_f32(b_0_low, f1_c2_low), mul));
+            vst1q_f32((float*)&x[0] + 4, vmulq_f32(vaddq_f32(b_0_high, f1_c2_high), mul));
+            vst1q_f32((float*)&x[2], vmulq_f32(vsubq_f32(b_0_low, f1_c2_low), mul));
+            vst1q_f32((float*)&x[2] + 4, vmulq_f32(vsubq_f32(b_0_high, f1_c2_high), mul));
+            vst1q_f32((float*)&x[1], vmulq_f32(vaddq_f32(b_2_low, f3_c2_low), mul));
+            vst1q_f32((float*)&x[1] + 4, vmulq_f32(vaddq_f32(b_2_high, f3_c2_high), mul));
+            vst1q_f32((float*)&x[3], vmulq_f32(vsubq_f32(b_2_low, f3_c2_low), mul));
+            vst1q_f32((float*)&x[3] + 4, vmulq_f32(vsubq_f32(b_2_high, f3_c2_high), mul));
         }
         else if (unlikely(_nbr_bits == 1)) {
             // 2-point IFFT
-            vst1q_f32(&x[0].f[0], vmulq_f32(vaddq_f32(vld1q_f32(&f[0].f[0]), vld1q_f32(&f[1].f[0])), mul));
-            vst1q_f32(&x[0].f[4], vmulq_f32(vaddq_f32(vld1q_f32(&f[0].f[4]), vld1q_f32(&f[1].f[4])), mul));
-            vst1q_f32(&x[1].f[0], vmulq_f32(vsubq_f32(vld1q_f32(&f[0].f[0]), vld1q_f32(&f[1].f[0])), mul));
-            vst1q_f32(&x[1].f[4], vmulq_f32(vsubq_f32(vld1q_f32(&f[0].f[4]), vld1q_f32(&f[1].f[4])), mul));
+            vst1q_f32((float*)&x[0], vmulq_f32(vaddq_f32(vld1q_f32((float*)&f[0]), vld1q_f32((float*)&f[1])), mul));
+            vst1q_f32((float*)&x[0] + 4, vmulq_f32(vaddq_f32(vld1q_f32((float*)&f[0] + 4), vld1q_f32((float*)&f[1] + 4)), mul));
+            vst1q_f32((float*)&x[1], vmulq_f32(vsubq_f32(vld1q_f32((float*)&f[0]), vld1q_f32((float*)&f[1])), mul));
+            vst1q_f32((float*)&x[1] + 4, vmulq_f32(vsubq_f32(vld1q_f32((float*)&f[0] + 4), vld1q_f32((float*)&f[1] + 4)), mul));
         }
         else {
             // 1-point IFFT
-            vst1q_f32(&x[0].f[0], vmulq_f32(vld1q_f32(&f[0].f[0]), mul));
-            vst1q_f32(&x[0].f[4], vmulq_f32(vld1q_f32(&f[0].f[4]), mul));
+            vst1q_f32(&x[0], vmulq_f32(vld1q_f32(&f[0]), mul));
+            vst1q_f32(&x[0] + 4, vmulq_f32(vld1q_f32(&f[0] + 4), mul));
         }
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
     
-    void do_ifft_neon_d8(const simd_double8 *_Nonnull f, simd_double8 *_Nonnull x, bool do_scale = false)
+    void do_ifft_neon_d8(simd_double8 *_Nonnull f, simd_double8 *_Nonnull x, bool do_scale = false)
     {
         // Initialize constants
         const float64x2_t c2 = vdupq_n_f64(2.0);
+        
+       // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
         
         // Initialize scaling factor
         float64x2_t mul = vdupq_n_f64(1.0);
@@ -6618,26 +6845,26 @@ protected:
                     }
                     
                     // Optimized extreme coefficient processing
-                    float64x2_t sfr_0_low = vld1q_f64(&sfr[0].f[0]);
+                    float64x2_t sfr_0_low = vld1q_f64(&sfr[0]);
                     float64x2_t sfr_0_high = vld1q_f64(&sfr[0].f[2]);
-                    float64x2_t sfr_nbr_coef_low = vld1q_f64(&sfr[nbr_coef].f[0]);
+                    float64x2_t sfr_nbr_coef_low = vld1q_f64(&sfr[nbr_coef]);
                     float64x2_t sfr_nbr_coef_high = vld1q_f64(&sfr[nbr_coef].f[2]);
                     
                     // Process and store immediately
-                    vst1q_f64(&df1r[0].f[0], vaddq_f64(sfr_0_low, sfr_nbr_coef_low));
+                    vst1q_f64(&df1r[0], vaddq_f64(sfr_0_low, sfr_nbr_coef_low));
                     vst1q_f64(&df1r[0].f[2], vaddq_f64(sfr_0_high, sfr_nbr_coef_high));
-                    vst1q_f64(&df2r[0].f[0], vsubq_f64(sfr_0_low, sfr_nbr_coef_low));
+                    vst1q_f64(&df2r[0], vsubq_f64(sfr_0_low, sfr_nbr_coef_low));
                     vst1q_f64(&df2r[0].f[2], vsubq_f64(sfr_0_high, sfr_nbr_coef_high));
                     
                     // Load and process h_nbr_coef values with c2 multiplication
-                    float64x2_t sfr_h_nbr_coef_low = vld1q_f64(&sfr[h_nbr_coef].f[0]);
+                    float64x2_t sfr_h_nbr_coef_low = vld1q_f64(&sfr[h_nbr_coef]);
                     float64x2_t sfr_h_nbr_coef_high = vld1q_f64(&sfr[h_nbr_coef].f[2]);
-                    float64x2_t sfi_h_nbr_coef_low = vld1q_f64(&sfi[h_nbr_coef].f[0]);
+                    float64x2_t sfi_h_nbr_coef_low = vld1q_f64(&sfi[h_nbr_coef]);
                     float64x2_t sfi_h_nbr_coef_high = vld1q_f64(&sfi[h_nbr_coef].f[2]);
                     
-                    vst1q_f64(&df1r[h_nbr_coef].f[0], vmulq_f64(sfr_h_nbr_coef_low, c2));
+                    vst1q_f64(&df1r[h_nbr_coef], vmulq_f64(sfr_h_nbr_coef_low, c2));
                     vst1q_f64(&df1r[h_nbr_coef].f[2], vmulq_f64(sfr_h_nbr_coef_high, c2));
-                    vst1q_f64(&df2r[h_nbr_coef].f[0], vmulq_f64(sfi_h_nbr_coef_low, c2));
+                    vst1q_f64(&df2r[h_nbr_coef], vmulq_f64(sfi_h_nbr_coef_low, c2));
                     vst1q_f64(&df2r[h_nbr_coef].f[2], vmulq_f64(sfi_h_nbr_coef_high, c2));
                     
                     // Process conjugate complex numbers
@@ -6669,19 +6896,19 @@ protected:
                         float64x1_t sin_val = vdup_n_f64(s);
                         
                         // Load values with efficient memory access
-                        float64x2_t sfr_j_low = vld1q_f64(&sfr[j].f[0]);
+                        float64x2_t sfr_j_low = vld1q_f64(&sfr[j]);
                         float64x2_t sfr_j_high = vld1q_f64(&sfr[j].f[2]);
-                        float64x2_t sfi_neg_j_low = vld1q_f64(&sfi[-j].f[0]);
+                        float64x2_t sfi_neg_j_low = vld1q_f64(&sfi[-j]);
                         float64x2_t sfi_neg_j_high = vld1q_f64(&sfi[-j].f[2]);
-                        float64x2_t sfi_j_low = vld1q_f64(&sfi[j].f[0]);
+                        float64x2_t sfi_j_low = vld1q_f64(&sfi[j]);
                         float64x2_t sfi_j_high = vld1q_f64(&sfi[j].f[2]);
-                        float64x2_t sfi_nbr_j_low = vld1q_f64(&sfi[nbr_coef - j].f[0]);
+                        float64x2_t sfi_nbr_j_low = vld1q_f64(&sfi[nbr_coef - j]);
                         float64x2_t sfi_nbr_j_high = vld1q_f64(&sfi[nbr_coef - j].f[2]);
                         
                         // Compute df1r and df1i values
-                        vst1q_f64(&df1r[j].f[0], vaddq_f64(sfr_j_low, sfi_neg_j_low));
+                        vst1q_f64(&df1r[j], vaddq_f64(sfr_j_low, sfi_neg_j_low));
                         vst1q_f64(&df1r[j].f[2], vaddq_f64(sfr_j_high, sfi_neg_j_high));
-                        vst1q_f64(&df1i[j].f[0], vsubq_f64(sfi_j_low, sfi_nbr_j_low));
+                        vst1q_f64(&df1i[j], vsubq_f64(sfi_j_low, sfi_nbr_j_low));
                         vst1q_f64(&df1i[j].f[2], vsubq_f64(sfi_j_high, sfi_nbr_j_high));
                         
                         // Calculate vr and vi
@@ -6702,9 +6929,9 @@ protected:
                                                                  vr_high, sin_val, 0);
                         
                         // Store with optimized memory access
-                        vst1q_f64(&df2r[j].f[0], df2r_j_low);
+                        vst1q_f64(&df2r[j], df2r_j_low);
                         vst1q_f64(&df2r[j].f[2], df2r_j_high);
-                        vst1q_f64(&df2i[j].f[0], df2i_j_low);
+                        vst1q_f64(&df2i[j], df2i_j_low);
                         vst1q_f64(&df2i[j].f[2], df2i_j_high);
                     }
                 }
@@ -6733,9 +6960,9 @@ protected:
                 }
                 
                 // Load data with interleaved memory access
-                float64x2_t f0_low = vld1q_f64(&sf2[0].f[0]);
+                float64x2_t f0_low = vld1q_f64(&sf2[0]);
                 float64x2_t f0_high = vld1q_f64(&sf2[0].f[2]);
-                float64x2_t f4_low = vld1q_f64(&sf2[4].f[0]);
+                float64x2_t f4_low = vld1q_f64(&sf2[4]);
                 float64x2_t f4_high = vld1q_f64(&sf2[4].f[2]);
                 
                 // Sum and difference computation - store immediately to free registers
@@ -6744,37 +6971,37 @@ protected:
                 float64x2_t diff04_low = vsubq_f64(f0_low, f4_low);
                 float64x2_t diff04_high = vsubq_f64(f0_high, f4_high);
                 
-                vst1q_f64(&df2[0].f[0], sum04_low);
+                vst1q_f64(&df2[0], sum04_low);
                 vst1q_f64(&df2[0].f[2], sum04_high);
-                vst1q_f64(&df2[4].f[0], diff04_low);
+                vst1q_f64(&df2[4], diff04_low);
                 vst1q_f64(&df2[4].f[2], diff04_high);
                 
                 // Load more data
-                float64x2_t f2_low = vld1q_f64(&sf2[2].f[0]);
+                float64x2_t f2_low = vld1q_f64(&sf2[2]);
                 float64x2_t f2_high = vld1q_f64(&sf2[2].f[2]);
-                float64x2_t f6_low = vld1q_f64(&sf2[6].f[0]);
+                float64x2_t f6_low = vld1q_f64(&sf2[6]);
                 float64x2_t f6_high = vld1q_f64(&sf2[6].f[2]);
-                float64x2_t f1_low = vld1q_f64(&sf2[1].f[0]);
+                float64x2_t f1_low = vld1q_f64(&sf2[1]);
                 float64x2_t f1_high = vld1q_f64(&sf2[1].f[2]);
-                float64x2_t f3_low = vld1q_f64(&sf2[3].f[0]);
+                float64x2_t f3_low = vld1q_f64(&sf2[3]);
                 float64x2_t f3_high = vld1q_f64(&sf2[3].f[2]);
                 
                 // Compute c2 multiplications and store
-                vst1q_f64(&df2[2].f[0], vmulq_f64(f2_low, c2));
+                vst1q_f64(&df2[2], vmulq_f64(f2_low, c2));
                 vst1q_f64(&df2[2].f[2], vmulq_f64(f2_high, c2));
-                vst1q_f64(&df2[6].f[0], vmulq_f64(f6_low, c2));
+                vst1q_f64(&df2[6], vmulq_f64(f6_low, c2));
                 vst1q_f64(&df2[6].f[2], vmulq_f64(f6_high, c2));
                 
                 // Load remaining data
-                float64x2_t f5_low = vld1q_f64(&sf2[5].f[0]);
+                float64x2_t f5_low = vld1q_f64(&sf2[5]);
                 float64x2_t f5_high = vld1q_f64(&sf2[5].f[2]);
-                float64x2_t f7_low = vld1q_f64(&sf2[7].f[0]);
+                float64x2_t f7_low = vld1q_f64(&sf2[7]);
                 float64x2_t f7_high = vld1q_f64(&sf2[7].f[2]);
                 
                 // Process simple additions and store
-                vst1q_f64(&df2[1].f[0], vaddq_f64(f1_low, f3_low));
+                vst1q_f64(&df2[1], vaddq_f64(f1_low, f3_low));
                 vst1q_f64(&df2[1].f[2], vaddq_f64(f1_high, f3_high));
-                vst1q_f64(&df2[3].f[0], vsubq_f64(f5_low, f7_low));
+                vst1q_f64(&df2[3], vsubq_f64(f5_low, f7_low));
                 vst1q_f64(&df2[3].f[2], vsubq_f64(f5_high, f7_high));
                 
                 // Compute vr and vi for SQ2_2 calculations
@@ -6784,9 +7011,9 @@ protected:
                 float64x2_t vi_high = vaddq_f64(f5_high, f7_high);
                 
                 // Optimized SQ2_2 multiplication with FMA
-                vst1q_f64(&df2[5].f[0], vmulq_lane_f64(vaddq_f64(vr_low, vi_low), sq2_2, 0));
+                vst1q_f64(&df2[5], vmulq_lane_f64(vaddq_f64(vr_low, vi_low), sq2_2, 0));
                 vst1q_f64(&df2[5].f[2], vmulq_lane_f64(vaddq_f64(vr_high, vi_high), sq2_2, 0));
-                vst1q_f64(&df2[7].f[0], vmulq_lane_f64(vsubq_f64(vi_low, vr_low), sq2_2, 0));
+                vst1q_f64(&df2[7], vmulq_lane_f64(vsubq_f64(vi_low, vr_low), sq2_2, 0));
                 vst1q_f64(&df2[7].f[2], vmulq_lane_f64(vsubq_f64(vi_high, vr_high), sq2_2, 0));
             }
             
@@ -6805,13 +7032,13 @@ protected:
                 
                 // Process first 4 outputs with optimized butterfly
                 {
-                    float64x2_t sf0_low = vld1q_f64(&sf2[0].f[0]);
+                    float64x2_t sf0_low = vld1q_f64(&sf2[0]);
                     float64x2_t sf0_high = vld1q_f64(&sf2[0].f[2]);
-                    float64x2_t sf1_low = vld1q_f64(&sf2[1].f[0]);
+                    float64x2_t sf1_low = vld1q_f64(&sf2[1]);
                     float64x2_t sf1_high = vld1q_f64(&sf2[1].f[2]);
-                    float64x2_t sf2val_low = vld1q_f64(&sf2[2].f[0]);
+                    float64x2_t sf2val_low = vld1q_f64(&sf2[2]);
                     float64x2_t sf2val_high = vld1q_f64(&sf2[2].f[2]);
-                    float64x2_t sf3_low = vld1q_f64(&sf2[3].f[0]);
+                    float64x2_t sf3_low = vld1q_f64(&sf2[3]);
                     float64x2_t sf3_high = vld1q_f64(&sf2[3].f[2]);
                     
                     // Calculate butterfly values with SIMD
@@ -6825,25 +7052,25 @@ protected:
                     float64x2_t b_3_high = vmulq_f64(sf3_high, c2);
                     
                     // Apply scaling and store with bit-reversal
-                    vst1q_f64(&x[lut[0]].f[0], vmulq_f64(vaddq_f64(b_0_low, b_1_low), mul));
+                    vst1q_f64(&x[lut[0]], vmulq_f64(vaddq_f64(b_0_low, b_1_low), mul));
                     vst1q_f64(&x[lut[0]].f[2], vmulq_f64(vaddq_f64(b_0_high, b_1_high), mul));
-                    vst1q_f64(&x[lut[1]].f[0], vmulq_f64(vsubq_f64(b_0_low, b_1_low), mul));
+                    vst1q_f64(&x[lut[1]], vmulq_f64(vsubq_f64(b_0_low, b_1_low), mul));
                     vst1q_f64(&x[lut[1]].f[2], vmulq_f64(vsubq_f64(b_0_high, b_1_high), mul));
-                    vst1q_f64(&x[lut[2]].f[0], vmulq_f64(vaddq_f64(b_2_low, b_3_low), mul));
+                    vst1q_f64(&x[lut[2]], vmulq_f64(vaddq_f64(b_2_low, b_3_low), mul));
                     vst1q_f64(&x[lut[2]].f[2], vmulq_f64(vaddq_f64(b_2_high, b_3_high), mul));
-                    vst1q_f64(&x[lut[3]].f[0], vmulq_f64(vsubq_f64(b_2_low, b_3_low), mul));
+                    vst1q_f64(&x[lut[3]], vmulq_f64(vsubq_f64(b_2_low, b_3_low), mul));
                     vst1q_f64(&x[lut[3]].f[2], vmulq_f64(vsubq_f64(b_2_high, b_3_high), mul));
                 }
                 
                 // Process second 4 outputs with similar optimization
                 {
-                    float64x2_t sf4_low = vld1q_f64(&sf2[4].f[0]);
+                    float64x2_t sf4_low = vld1q_f64(&sf2[4]);
                     float64x2_t sf4_high = vld1q_f64(&sf2[4].f[2]);
-                    float64x2_t sf5_low = vld1q_f64(&sf2[5].f[0]);
+                    float64x2_t sf5_low = vld1q_f64(&sf2[5]);
                     float64x2_t sf5_high = vld1q_f64(&sf2[5].f[2]);
-                    float64x2_t sf6_low = vld1q_f64(&sf2[6].f[0]);
+                    float64x2_t sf6_low = vld1q_f64(&sf2[6]);
                     float64x2_t sf6_high = vld1q_f64(&sf2[6].f[2]);
-                    float64x2_t sf7_low = vld1q_f64(&sf2[7].f[0]);
+                    float64x2_t sf7_low = vld1q_f64(&sf2[7]);
                     float64x2_t sf7_high = vld1q_f64(&sf2[7].f[2]);
                     
                     float64x2_t b_0_low = vaddq_f64(sf4_low, sf6_low);
@@ -6855,13 +7082,13 @@ protected:
                     float64x2_t b_3_low = vmulq_f64(sf7_low, c2);
                     float64x2_t b_3_high = vmulq_f64(sf7_high, c2);
                     
-                    vst1q_f64(&x[lut[4]].f[0], vmulq_f64(vaddq_f64(b_0_low, b_1_low), mul));
+                    vst1q_f64(&x[lut[4]], vmulq_f64(vaddq_f64(b_0_low, b_1_low), mul));
                     vst1q_f64(&x[lut[4]].f[2], vmulq_f64(vaddq_f64(b_0_high, b_1_high), mul));
-                    vst1q_f64(&x[lut[5]].f[0], vmulq_f64(vsubq_f64(b_0_low, b_1_low), mul));
+                    vst1q_f64(&x[lut[5]], vmulq_f64(vsubq_f64(b_0_low, b_1_low), mul));
                     vst1q_f64(&x[lut[5]].f[2], vmulq_f64(vsubq_f64(b_0_high, b_1_high), mul));
-                    vst1q_f64(&x[lut[6]].f[0], vmulq_f64(vaddq_f64(b_2_low, b_3_low), mul));
+                    vst1q_f64(&x[lut[6]], vmulq_f64(vaddq_f64(b_2_low, b_3_low), mul));
                     vst1q_f64(&x[lut[6]].f[2], vmulq_f64(vaddq_f64(b_2_high, b_3_high), mul));
-                    vst1q_f64(&x[lut[7]].f[0], vmulq_f64(vsubq_f64(b_2_low, b_3_low), mul));
+                    vst1q_f64(&x[lut[7]], vmulq_f64(vsubq_f64(b_2_low, b_3_low), mul));
                     vst1q_f64(&x[lut[7]].f[2], vmulq_f64(vsubq_f64(b_2_high, b_3_high), mul));
                 }
             }
@@ -6869,37 +7096,38 @@ protected:
         // Special cases for small IFFTs optimized with vectorized operations
         else if (unlikely(_nbr_bits == 2)) {
             // 4-point IFFT
-            const float64x2_t b_0_low = vaddq_f64(vld1q_f64(&f[0].f[0]), vld1q_f64(&f[2].f[0]));
+            const float64x2_t b_0_low = vaddq_f64(vld1q_f64(&f[0]), vld1q_f64(&f[2]));
             const float64x2_t b_0_high = vaddq_f64(vld1q_f64(&f[0].f[2]), vld1q_f64(&f[2].f[2]));
-            const float64x2_t b_2_low = vsubq_f64(vld1q_f64(&f[0].f[0]), vld1q_f64(&f[2].f[0]));
+            const float64x2_t b_2_low = vsubq_f64(vld1q_f64(&f[0]), vld1q_f64(&f[2]));
             const float64x2_t b_2_high = vsubq_f64(vld1q_f64(&f[0].f[2]), vld1q_f64(&f[2].f[2]));
             
-            const float64x2_t f1_c2_low = vmulq_f64(vld1q_f64(&f[1].f[0]), c2);
+            const float64x2_t f1_c2_low = vmulq_f64(vld1q_f64(&f[1]), c2);
             const float64x2_t f1_c2_high = vmulq_f64(vld1q_f64(&f[1].f[2]), c2);
-            const float64x2_t f3_c2_low = vmulq_f64(vld1q_f64(&f[3].f[0]), c2);
+            const float64x2_t f3_c2_low = vmulq_f64(vld1q_f64(&f[3]), c2);
             const float64x2_t f3_c2_high = vmulq_f64(vld1q_f64(&f[3].f[2]), c2);
             
-            vst1q_f64(&x[0].f[0], vmulq_f64(vaddq_f64(b_0_low, f1_c2_low), mul));
+            vst1q_f64(&x[0], vmulq_f64(vaddq_f64(b_0_low, f1_c2_low), mul));
             vst1q_f64(&x[0].f[2], vmulq_f64(vaddq_f64(b_0_high, f1_c2_high), mul));
-            vst1q_f64(&x[2].f[0], vmulq_f64(vsubq_f64(b_0_low, f1_c2_low), mul));
+            vst1q_f64(&x[2], vmulq_f64(vsubq_f64(b_0_low, f1_c2_low), mul));
             vst1q_f64(&x[2].f[2], vmulq_f64(vsubq_f64(b_0_high, f1_c2_high), mul));
-            vst1q_f64(&x[1].f[0], vmulq_f64(vaddq_f64(b_2_low, f3_c2_low), mul));
+            vst1q_f64(&x[1], vmulq_f64(vaddq_f64(b_2_low, f3_c2_low), mul));
             vst1q_f64(&x[1].f[2], vmulq_f64(vaddq_f64(b_2_high, f3_c2_high), mul));
-            vst1q_f64(&x[3].f[0], vmulq_f64(vsubq_f64(b_2_low, f3_c2_low), mul));
+            vst1q_f64(&x[3], vmulq_f64(vsubq_f64(b_2_low, f3_c2_low), mul));
             vst1q_f64(&x[3].f[2], vmulq_f64(vsubq_f64(b_2_high, f3_c2_high), mul));
         }
         else if (unlikely(_nbr_bits == 1)) {
             // 2-point IFFT optimized with vectorized add/sub
-            vst1q_f64(&x[0].f[0], vmulq_f64(vaddq_f64(vld1q_f64(&f[0].f[0]), vld1q_f64(&f[1].f[0])), mul));
+            vst1q_f64(&x[0], vmulq_f64(vaddq_f64(vld1q_f64(&f[0]), vld1q_f64(&f[1])), mul));
             vst1q_f64(&x[0].f[2], vmulq_f64(vaddq_f64(vld1q_f64(&f[0].f[2]), vld1q_f64(&f[1].f[2])), mul));
-            vst1q_f64(&x[1].f[0], vmulq_f64(vsubq_f64(vld1q_f64(&f[0].f[0]), vld1q_f64(&f[1].f[0])), mul));
+            vst1q_f64(&x[1], vmulq_f64(vsubq_f64(vld1q_f64(&f[0]), vld1q_f64(&f[1])), mul));
             vst1q_f64(&x[1].f[2], vmulq_f64(vsubq_f64(vld1q_f64(&f[0].f[2]), vld1q_f64(&f[1].f[2])), mul));
         }
         else {
             // 1-point IFFT - simple multiplication with scaling
-            vst1q_f64(&x[0].f[0], vmulq_f64(vld1q_f64(&f[0].f[0]), mul));
+            vst1q_f64(&x[0], vmulq_f64(vld1q_f64(&f[0]), mul));
             vst1q_f64(&x[0].f[2], vmulq_f64(vld1q_f64(&f[0].f[2]), mul));
         }
+        // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
 #else // NEW_NEON_OPT
     
@@ -7609,13 +7837,15 @@ inline void do_fft_simd_f1_impl(
                 x3[j] = x[lut[idx + 3]];
             }
             
-            simd_float8 t01 = x0 + x1;
-            simd_float8 t23 = x2 + x3;
-
-            simd_float8 out0 = t01 + t23;  // x0 + x1 + x2 + x3
-            simd_float8 out1 = x0 - x1;    // x0 - x1
-            simd_float8 out2 = t01 - t23;  // x0 + x1 - x2 - x3
-            simd_float8 out3 = x2 - x3;    // x2 - x3
+            simd_float8 t0 = x0 + x2;
+            simd_float8 t1 = x1 + x3;
+            simd_float8 t2 = x0 - x2;
+            simd_float8 t3 = x1 - x3;
+            
+            simd_float8 out0 = t0 + t1;
+            simd_float8 out2 = t0 - t1;
+            simd_float8 out1 = t2;
+            simd_float8 out3 = t3;
             
             for (int j = 0; j < 8; j++) {
                 int idx = i + j * 4;
@@ -7715,6 +7945,8 @@ inline void do_fft_simd_f1_impl(
     } else {
         f[0] = x[0];
     }
+    // Negate imaginary parts for standard DFT convention: exp(-j*2π*nk/N)
+    // for (int i = N/2 + 1; i < N; i++) { f[i] = -f[i]; }
 }
 
 inline void do_fft_simd_d1_impl(
@@ -7759,13 +7991,15 @@ inline void do_fft_simd_d1_impl(
                 x3[j] = x[lut[idx + 3]];
             }
             
-            simd_double4 t01 = x0 + x1;
-            simd_double4 t23 = x2 + x3;
-
-            simd_double4 out0 = t01 + t23;  // x0 + x1 + x2 + x3
-            simd_double4 out1 = x0 - x1;    // x0 - x1
-            simd_double4 out2 = t01 - t23;  // x0 + x1 - x2 - x3
-            simd_double4 out3 = x2 - x3;    // x2 - x3
+            simd_double4 t0 = x0 + x2;
+            simd_double4 t1 = x1 + x3;
+            simd_double4 t2 = x0 - x2;
+            simd_double4 t3 = x1 - x3;
+            
+            simd_double4 out0 = t0 + t1;
+            simd_double4 out2 = t0 - t1;
+            simd_double4 out1 = t2;
+            simd_double4 out3 = t3;
             
             for (int j = 0; j < 4; j++) {
                 int idx = i + j * 4;
@@ -7869,6 +8103,8 @@ inline void do_fft_simd_d1_impl(
         // 1-point FFT
         f[0] = x[0];
     }
+    // Negate imaginary parts for standard DFT convention: exp(-j*2π*nk/N)
+    // for (int i = N/2 + 1; i < N; i++) { f[i] = -f[i]; }
 }
 
 // ============================================================================
@@ -7876,7 +8112,7 @@ inline void do_fft_simd_d1_impl(
 // ============================================================================
 
 inline void do_ifft_simd_f1_impl(
-    const float* _Nonnull f,
+    float* _Nonnull f,
     float* _Nonnull x,
     int N,
     int nbr_bits,
@@ -7890,6 +8126,9 @@ inline void do_ifft_simd_f1_impl(
     const float c2 = 2.0f;
     float mul = 1.0f;
     if (do_scale) mul = 1.0f / static_cast<float>(N);
+    
+    // Negate imaginary parts for standard DFT convention
+    // for (int i = N/2 + 1; i < N; i++) { f[i] = -f[i]; }
     
     auto twiddle_cache = static_cast<FFTReal<float>::TwiddleCache*>(twiddle_cache_ptr);
     
@@ -7931,69 +8170,23 @@ inline void do_ifft_simd_f1_impl(
                 // Vectorized loop - process 8 at a time
                 int j;
                 for (j = 1; j + 8 <= h_nbr_coef; j += 8) {
-                    simd_float8 vcos, vsin;
-                    simd_float8 sfr_v, sfi_v, sfi_neg_v, sfi_conj_v;
-                    
+                    // Manual unrolling for 8 iterations
                     for (int k = 0; k < 8; k++) {
-                        twiddle_cache->get_twiddle(pass, j + k, c, s);
-                        vcos[k] = c;
-                        vsin[k] = s;
-                        sfr_v[k] = sfr[j + k];
-                        sfi_v[k] = sfi[j + k];
-                        sfi_neg_v[k] = sfi[-(j + k)];
-                        sfi_conj_v[k] = sfi[nbr_coef - (j + k)];
-                    }
-                    
-                    simd_float8 df1r_v = sfr_v + sfi_neg_v;
-                    simd_float8 df1i_v = sfi_v - sfi_conj_v;
-                    
-                    simd_float8 vr = sfr_v - sfi_neg_v;
-                    simd_float8 vi = sfi_v + sfi_conj_v;
-                    
-                    simd_float8 df2r_v = vr * vcos + vi * vsin;
-                    simd_float8 df2i_v = vi * vcos - vr * vsin;
-                    
-                    for (int k = 0; k < 8; k++) {
-                        df1r[j + k] = df1r_v[k];
-                        df1i[j + k] = df1i_v[k];
-                        df2r[j + k] = df2r_v[k];
-                        df2i[j + k] = df2i_v[k];
+                        int idx = j + k;
+                        df1r[idx] = sfr[idx] + sfi[-idx];
+                        df1i[idx] = sfi[idx] - sfi[nbr_coef - idx];
+                        
+                        twiddle_cache->get_twiddle(pass, idx, c, s);
+                        
+                        auto vr = sfr[idx] - sfi[-idx];
+                        auto vi = sfi[idx] + sfi[nbr_coef - idx];
+                        
+                        df2r[idx] = vr * c + vi * s;
+                        df2i[idx] = vi * c - vr * s;
                     }
                 }
-
-                // Remainder with simd_float4
-                for (; j + 4 <= h_nbr_coef; j += 4) {
-                    simd_float4 vcos, vsin;
-                    simd_float4 sfr_v, sfi_v, sfi_neg_v, sfi_conj_v;
-                    
-                    for (int k = 0; k < 4; k++) {
-                        twiddle_cache->get_twiddle(pass, j + k, c, s);
-                        vcos[k] = c;
-                        vsin[k] = s;
-                        sfr_v[k] = sfr[j + k];
-                        sfi_v[k] = sfi[j + k];
-                        sfi_neg_v[k] = sfi[-(j + k)];
-                        sfi_conj_v[k] = sfi[nbr_coef - (j + k)];
-                    }
-                    
-                    simd_float4 df1r_v = sfr_v + sfi_neg_v;
-                    simd_float4 df1i_v = sfi_v - sfi_conj_v;
-                    
-                    simd_float4 vr = sfr_v - sfi_neg_v;
-                    simd_float4 vi = sfi_v + sfi_conj_v;
-                    
-                    simd_float4 df2r_v = vr * vcos + vi * vsin;
-                    simd_float4 df2i_v = vi * vcos - vr * vsin;
-                    
-                    for (int k = 0; k < 4; k++) {
-                        df1r[j + k] = df1r_v[k];
-                        df1i[j + k] = df1i_v[k];
-                        df2r[j + k] = df2r_v[k];
-                        df2i[j + k] = df2i_v[k];
-                    }
-                }
-
-                // Final scalar remainder (at most 3 elements)
+                
+                // Scalar remainder
                 for (; j < h_nbr_coef; ++j) {
                     df1r[j] = sfr[j] + sfi[-j];
                     df1i[j] = sfi[j] - sfi[nbr_coef - j];
@@ -8108,6 +8301,8 @@ inline void do_ifft_simd_f1_impl(
         // 1-point IFFT
         x[0] = f[0] * mul;
     }
+    // Restore the negated imaginary parts
+   // for (int i = N/2 + 1; i < N; i++) { f[i] = -f[i]; }
 }
 
 // ============================================================================
@@ -8115,7 +8310,7 @@ inline void do_ifft_simd_f1_impl(
 // ============================================================================
 
 inline void do_ifft_simd_d1_impl(
-    const double* _Nonnull f,
+    double* _Nonnull f,
     double* _Nonnull x,
     int N,
     int nbr_bits,
@@ -8129,7 +8324,10 @@ inline void do_ifft_simd_d1_impl(
     const double c2 = 2.0;
     double mul = 1.0;
     if (do_scale) mul = 1.0 / double(N);
-    
+   
+    // Negate imaginary parts for standard DFT convention
+
+    //for (int i = N/2 + 1; i < N; i++) { f[i] = -f[i]; }
     auto twiddle_cache = static_cast<FFTReal<double>::TwiddleCache*>(twiddle_cache_ptr);
     
     if (nbr_bits > 2) {
@@ -8170,69 +8368,23 @@ inline void do_ifft_simd_d1_impl(
                 // Vectorized loop - process 4 at a time
                 int j;
                 for (j = 1; j + 4 <= h_nbr_coef; j += 4) {
-                    simd_double4 vcos, vsin;
-                    simd_double4 sfr_v, sfi_v, sfi_neg_v, sfi_conj_v;
-                    
+                    // Manual unrolling for 4 iterations
                     for (int k = 0; k < 4; k++) {
-                        twiddle_cache->get_twiddle(pass, j + k, c, s);
-                        vcos[k] = c;
-                        vsin[k] = s;
-                        sfr_v[k] = sfr[j + k];
-                        sfi_v[k] = sfi[j + k];
-                        sfi_neg_v[k] = sfi[-(j + k)];
-                        sfi_conj_v[k] = sfi[nbr_coef - (j + k)];
-                    }
-                    
-                    simd_double4 df1r_v = sfr_v + sfi_neg_v;
-                    simd_double4 df1i_v = sfi_v - sfi_conj_v;
-                    
-                    simd_double4 vr = sfr_v - sfi_neg_v;
-                    simd_double4 vi = sfi_v + sfi_conj_v;
-                    
-                    simd_double4 df2r_v = vr * vcos + vi * vsin;
-                    simd_double4 df2i_v = vi * vcos - vr * vsin;
-                    
-                    for (int k = 0; k < 4; k++) {
-                        df1r[j + k] = df1r_v[k];
-                        df1i[j + k] = df1i_v[k];
-                        df2r[j + k] = df2r_v[k];
-                        df2i[j + k] = df2i_v[k];
+                        int idx = j + k;
+                        df1r[idx] = sfr[idx] + sfi[-idx];
+                        df1i[idx] = sfi[idx] - sfi[nbr_coef - idx];
+                        
+                        twiddle_cache->get_twiddle(pass, idx, c, s);
+                        
+                        auto vr = sfr[idx] - sfi[-idx];
+                        auto vi = sfi[idx] + sfi[nbr_coef - idx];
+                        
+                        df2r[idx] = vr * c + vi * s;
+                        df2i[idx] = vi * c - vr * s;
                     }
                 }
-
-                // Remainder with simd_double2
-                for (; j + 2 <= h_nbr_coef; j += 2) {
-                    simd_double2 vcos, vsin;
-                    simd_double2 sfr_v, sfi_v, sfi_neg_v, sfi_conj_v;
-                    
-                    for (int k = 0; k < 2; k++) {
-                        twiddle_cache->get_twiddle(pass, j + k, c, s);
-                        vcos[k] = c;
-                        vsin[k] = s;
-                        sfr_v[k] = sfr[j + k];
-                        sfi_v[k] = sfi[j + k];
-                        sfi_neg_v[k] = sfi[-(j + k)];
-                        sfi_conj_v[k] = sfi[nbr_coef - (j + k)];
-                    }
-                    
-                    simd_double2 df1r_v = sfr_v + sfi_neg_v;
-                    simd_double2 df1i_v = sfi_v - sfi_conj_v;
-                    
-                    simd_double2 vr = sfr_v - sfi_neg_v;
-                    simd_double2 vi = sfi_v + sfi_conj_v;
-                    
-                    simd_double2 df2r_v = vr * vcos + vi * vsin;
-                    simd_double2 df2i_v = vi * vcos - vr * vsin;
-                    
-                    for (int k = 0; k < 2; k++) {
-                        df1r[j + k] = df1r_v[k];
-                        df1i[j + k] = df1i_v[k];
-                        df2r[j + k] = df2r_v[k];
-                        df2i[j + k] = df2i_v[k];
-                    }
-                }
-
-                // Final scalar remainder (at most 1 element)
+                
+                // Scalar remainder
                 for (; j < h_nbr_coef; ++j) {
                     df1r[j] = sfr[j] + sfi[-j];
                     df1i[j] = sfi[j] - sfi[nbr_coef - j];
@@ -8347,6 +8499,8 @@ inline void do_ifft_simd_d1_impl(
         // 1-point IFFT
         x[0] = f[0] * mul;
     }
+    // Restore the negated imaginary parts
+   //  for (int i = N/2 + 1; i < N; i++) { f[i] = -f[i]; }
 }
 
 } // namespace fft_simd_helpers
