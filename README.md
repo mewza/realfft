@@ -1,10 +1,9 @@
-FFTReal v1.67
--------------
+FFTReal 2.1
+-----------
 
-<b>NEW (v1.67):</b> Updated to v1.65 (fixed optimized helper functions for f1/d1), added neon
-                    vector optimizations for do_fft/do_ifft (for optimized MCLT for example),
-                    fixed all of the do_fft_neon_* optimizaed with neon functions bugs associated with -SQ2_2,
-                    and fixed a stupid bug in real_ifft() do_ifft(yy, y, do_scale) yy and y were swapped places!
+<b>NEW (v1.67):</b> Updated to v2.1 (Fixed NEON compilation issue with Xcode v26.1 (17B54))
+                    for some reason .f[2] and .f[4] suddenly stopped working and had to be replaced
+                    with (float*)addr + 2, + 4 throughout entire NEON code. God knows?
 
 How to reach me: 
             Dmitry Boldyrev <subband@gmail.com> or 
