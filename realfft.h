@@ -1,16 +1,14 @@
 /*-----------------------------------------------------------------------------*\
-**   FFTReal v2.1 -- Real/Complex Forward and Inverse Fast Fourier Transform   **
-**   (c) 2021-2025 Dmitry Boldyrev. All rights reserved.                       **
+**   FFTReal v2.5 -- Real/Complex Forward and Inverse Fast Fourier Transform   **
+**   (c) 2021-2026 Dmitry Boldyrev. All rights reserved.                       **
 **                                                                             **
 **   fftreal.h - Main include header                                           **
-**                                                                             **
-**   FFT/MCLT Bundle v2.0 -- PRIVATE EDITION -- DO NOT DISTRIBUTE --           **
-**                                                                             **
+**                                                                              **
 **    Features include:                                                        **
 **        - Advanced intrinsics NEON optimizations                             **
 **        - Arbitrary size and unique_ptr style allocation                     **
 **        - Complex and Real forward / inverse transforms                      **
-**        - Packed and ifnterleaved functions (do_fft, do_fft_complex)          **
+**        - Packed and interleaved functions (do_fft, do_fft_complex)          **
 **        - SIMD vector and scalar support (float, double, simd_float8, etc)   **
 **        - 1/N scaling in real_ifft(..., true);                               **
 **        - float/double scalars accelerations with SIMD vectorization         **
@@ -26,36 +24,61 @@
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #endif 
-#include "const1.h"
+#include <mss/const1.h>
 #include <memory>
+#include <type_traits>
 
-#if !TARGET_OS_MACCATALYST && TARGET_CPU_ARM64 && defined(__ARM_NEON)
+#define FFTREAL_F1_SIMD // Enable FFTReal<float> and FFTReal<double> optimizations
+
+// FFTReal<float> → fft_simd_helpers (2026-10-27, user: "optimizing FFTReal<float> using float8 butterfly and fixing bugs in it"): the passes
+// >= 3 run their conjugate pairs 8 → 4 → 2 lanes → scalar (a pass's run is 2^k − 1: the tail is always 4 + 2 + 1). Mac: float 1.8-2.15×,
+// double 1.5-1.7× at N 512-8192, same results to rounding (float ≤ 1.6e-7, double ≤ 2e-16 relative). T = float / double; 0 = the generic passes.
+#ifndef FFTREAL_F1_SIMD
+#  if defined(__APPLE__) || defined(__ANDROID__)
+#    define FFTREAL_F1_SIMD 1
+#  else
+#    define FFTREAL_F1_SIMD 0
+#  endif
+#endif
+
+// Real arm64+NEON: Apple (TARGET_CPU_ARM64) OR Android (__aarch64__). Additive Android branch — iOS
+// and WASM are unaffected (neither defines __ANDROID__ with __aarch64__). Lights up the SIMD FFT on
+// Android, which otherwise fell through to the (much slower) scalar path. <simd/simd.h> is shimmed
+// (wasm/shim/simd/simd.h) and <arm_neon.h> is native on the NDK.
+#if ((!TARGET_OS_MACCATALYST && TARGET_CPU_ARM64 && defined(__ARM_NEON)) \
+ || (defined(__ANDROID__) && defined(__aarch64__) && defined(__ARM_NEON))) \
+ && !defined(FFT_FORCE_SCALAR)   /* FFT_FORCE_SCALAR: harness-only A/B knob (never defined in builds) */
 #include <simd/simd.h>
 #include <arm_neon.h>
 
 #define FFT_USE_NEON 1
 #define NEW_NEON_OPT 1
 
-#pragma warning("Compiling with NEON optimizations")
-#endif // !TARGET_OS_MACCATALYST && TARGET_CPU_ARM64 && defined(__ARM_NEON)
+#pragma message("FFTReal: compiling with NEON optimizations")
+#endif // arm64 + NEON (Apple or Android)
+
+#include "fht.h"
+
+// Option: FHTReal, FFTReal_O
+#define FFTReal FFTReal_O
 
 namespace fft_simd_helpers {
 
-void do_fft_simd_f1_impl(const float* x, float* f, int N, int nbr_bits,
+inline void do_fft_simd_f1_impl(const float* x, float* f, int N, int nbr_bits,
                        const int* bit_rev_lut, float* buffer_ptr,
                        void* twiddle_cache_ptr);
 
-void do_fft_simd_d1_impl(const double* x, double* f, int N, int nbr_bits,
+inline void do_fft_simd_d1_impl(const double* x, double* f, int N, int nbr_bits,
                        const int* bit_rev_lut, double* buffer_ptr,
                        void* twiddle_cache_ptr);
 
-void do_ifft_simd_d1_impl(double* _Nonnull f, double* _Nonnull x, int N,
+inline void do_ifft_simd_d1_impl(double* _Nonnull f, double* _Nonnull x, int N,
                         int nbr_bits, const int* _Nonnull bit_rev_lut,
                         double* _Nonnull buffer_ptr,
                         void* _Nonnull twiddle_cache_ptr,
                         bool do_scale);
 
-void do_ifft_simd_f1_impl(float* _Nonnull f, float* _Nonnull x, int N,
+inline void do_ifft_simd_f1_impl(float* _Nonnull f, float* _Nonnull x, int N,
                         int nbr_bits, const int* _Nonnull bit_rev_lut,
                         float* _Nonnull buffer_ptr,
                         void* _Nonnull twiddle_cache_ptr,
@@ -64,7 +87,7 @@ void do_ifft_simd_f1_impl(float* _Nonnull f, float* _Nonnull x, int N,
 } // namespace fft_simd_helpers
 
 template <typename T>
-class FFTReal
+class FFTReal_O
 {
     using T1 = SimdBase<T>;
     using cmplxTT = cmplxT<T>;
@@ -84,7 +107,7 @@ protected:
     T*_Nullable xx = nullptr;
     
 public:
-    FFTReal(int n) :
+    FFTReal_O(int n) :
     _N(n),
     _N2(n/2),
     _nbr_bits(floorlog2(n))
@@ -98,7 +121,7 @@ public:
         _twiddle_cache = std::make_unique<TwiddleCache>(_nbr_bits, _N2);
     }
     
-    ~FFTReal() {
+    ~FFTReal_O() {
         alignedFree(buffer_ptr);
         alignedFree(yy);
         alignedFree(xx);
@@ -138,31 +161,26 @@ public:
         } else {
             memcpy(xx, x, _N * sizeof(T));
         }
-        if constexpr( std::is_same_v<T, float> ) {
-            fft_simd_helpers::do_fft_simd_f1_impl(xx, yy, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()));
-        }
-        else if constexpr( std::is_same_v<T, double> ) {
-            fft_simd_helpers::do_fft_simd_d1_impl(xx, yy, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()));
-        } else
-#if FFT_USE_NEON
-        if constexpr( std::is_same_v<T, simd_double8> ) {
-            do_fft_neon_d8(xx, yy);
-        } else if constexpr( std::is_same_v<T, simd_float8> )
-            do_fft_neon_f8(xx, yy);
-        if constexpr( std::is_same_v<T, simd_double4> ) {
-            do_fft_neon_d4(xx, yy);
-        } else if constexpr( std::is_same_v<T, simd_float4> )
-            do_fft_neon_f4(xx, yy);
-        if constexpr( std::is_same_v<T, simd_double2> ) {
-            do_fft_neon_d2(xx, yy);
-        } else if constexpr( std::is_same_v<T, simd_float2> )
-            do_fft_neon_f2(xx, yy);
-        if constexpr( std::is_same_v<T, double> ) {
-            do_fft_neon_d1(xx, yy);
-        } else if constexpr( std::is_same_v<T, float> ) {
-            do_fft_neon_f1(xx, yy);
-        } else
-#endif
+        // NOTE (2026-07-04): the hoisted do_fft_simd_f1/d1_impl dispatch is REMOVED — those impls
+        // produce a WRONG transform (sine → scattered bins; ifft∘fft = quarter-swap permutation;
+        // proven vs exact DFT at every N). They also put the IR-partition spectra (_av, float) in a
+        // different basis than the realtime signal spectra (_av8, 8-wide do_fft) — the partitioned
+        // MAC then multiplies mismatched bases = the block-locked convolver artifacts. float/double
+        // now use do_fft_neon_f1/d1 (verified) or the reference do_fft().
+        // ============================================================================
+        // DISPATCH UNIFIED ON THE REFERENCE TRANSFORM (2026-07-04) — measured verdicts:
+        //   do_fft_simd_f1/d1_impl, do_fft_neon_f1/d1  : BROKEN (sine scatters across bins;
+        //       ifft∘fft = quarter-swap permutation; proven vs exact DFT at N=8..32768)
+        //   do_fft_neon_f2/f4/d2/d4                    : BROKEN (50-70%% rel error vs DFT)
+        //   do_fft_neon_f8/d8                          : mathematically OK, but exactly as
+        //       fast as the reference (measured 256..16384) and their results were ALWAYS
+        //       overwritten by the trailing reference call anyway (the old `else` bound only
+        //       to the f1/d1 chain) — so nothing ever shipped their output.
+        // The reference do_fft/do_ifft is what every platform has effectively been running
+        // for vector types all along; float/double joining it is the only audible change
+        // (it FIXES IR-load partitions, IR preprocessing, and EAX3D ScalarFFT users).
+        // The variant implementations remain below, unused, for reference/repair.
+        // ============================================================================
         {
             do_fft(xx, yy);
         }
@@ -197,31 +215,9 @@ public:
         yy[   0 ] = x[0].re;      // DC
         yy[ _N2 ] = x[_N2].re;    // ✓ Nyquist from input, not forced to 0!
     
-        if constexpr( std::is_same_v<T, float> ) {
-            fft_simd_helpers::do_ifft_simd_f1_impl(yy, y, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
-        } else if constexpr( std::is_same_v<T, double> ) {
-            fft_simd_helpers::do_ifft_simd_d1_impl(yy, y, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, static_cast<void*>(_twiddle_cache.get()), do_scale);
-        } else
-#if FFT_USE_NEON
-        if constexpr( std::is_same_v<T, simd_double8> ) {
-            do_ifft_neon_d8(yy, y, do_scale);
-        } else if constexpr( std::is_same_v<T, simd_float8> )
-            do_ifft_neon_f8(yy, y, do_scale);
-        if constexpr( std::is_same_v<T, simd_double4> ) {
-            do_ifft_neon_d4(yy, y, do_scale);
-        } else if constexpr( std::is_same_v<T, simd_float4> )
-            do_ifft_neon_f4(yy, y, do_scale);
-        if constexpr( std::is_same_v<T, simd_double2> ) {
-            do_ifft_neon_d2(yy, y, do_scale);
-        } else if constexpr( std::is_same_v<T, simd_float2> )
-            do_ifft_neon_f2(yy, y, do_scale);
-        if constexpr( std::is_same_v<T, double> ) {
-            do_ifft_neon_d1(yy, y, do_scale);
-        } else if constexpr( std::is_same_v<T, float> ) {
-            do_ifft_neon_f1(yy, y, do_scale);
-        } else
-#endif
-        {
+        // NOTE (2026-07-04): hoisted do_ifft_simd_f1/d1_impl dispatch REMOVED — see real_fft note.
+        // Dispatch unified on the reference inverse (2026-07-04) — see real_fft note above.
+{
             do_ifft(yy, y, do_scale);
         }
     }
@@ -289,6 +285,13 @@ public:
     
     // Forward real FFT
     void do_fft(const T *_Nonnull x, T *_Nonnull f) {
+#if FFTREAL_F1_SIMD
+        if constexpr (std::is_same_v<T, float>) {
+            if (_nbr_bits > 2) { fft_simd_helpers::do_fft_simd_f1_impl(x, f, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, _twiddle_cache.get()); return; }
+        } else if constexpr (std::is_same_v<T, double>) {
+            if (_nbr_bits > 2) { fft_simd_helpers::do_fft_simd_d1_impl(x, f, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, _twiddle_cache.get()); return; }
+        }
+#endif
         T1 c, s;
         if (_nbr_bits > 2) {
             T *sf, *df;
@@ -450,6 +453,13 @@ public:
         
         T1 mul = 1.;
         if (do_scale) mul *= 1./(T1)_N;
+#if FFTREAL_F1_SIMD
+        if constexpr (std::is_same_v<T, float>) {
+            if (_nbr_bits > 2) { fft_simd_helpers::do_ifft_simd_f1_impl(f, x, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, _twiddle_cache.get(), do_scale); return; }
+        } else if constexpr (std::is_same_v<T, double>) {
+            if (_nbr_bits > 2) { fft_simd_helpers::do_ifft_simd_d1_impl(f, x, _N, _nbr_bits, _bit_rev_lut->get_ptr(), buffer_ptr, _twiddle_cache.get(), do_scale); return; }
+        }
+#endif
         
         //  General case
         
@@ -604,7 +614,7 @@ public:
         // for (int i = _N2 + 1; i < _N; i++) { f[i] = -f[i]; }
     }
     
-    FFTReal(FFTReal&& other) noexcept :
+    FFTReal_O(FFTReal_O&& other) noexcept :
     _nbr_bits(other._nbr_bits),
     _N2(other._N2),
     _N(other._N),
@@ -621,7 +631,7 @@ public:
     }
     
     // Implement move assignment
-    FFTReal& operator=(FFTReal&& other) noexcept {
+    FFTReal_O& operator=(FFTReal_O&& other) noexcept {
         if (this != &other) {
             alignedFree(buffer_ptr);
             alignedFree(yy);
@@ -645,8 +655,8 @@ public:
     }
     
     // Delete copy constructor and assignment to avoid double-free issues
-    FFTReal(const FFTReal&) = delete;
-    FFTReal& operator=(const FFTReal&) = delete;
+    FFTReal_O(const FFTReal_O&) = delete;
+    FFTReal_O& operator=(const FFTReal_O&) = delete;
     
     inline void do_rescale(T *_Nonnull x) const {
         const T1 mul = 1./(T1)_N;
@@ -798,94 +808,6 @@ public:
         }
         
     };
-    
-    /*
-    class twiddle_cache {
-    protected:
-        T1*_Nullable*_Nullable cos_data = nullptr;
-        T1*_Nullable*_Nullable sin_data = nullptr;
-        int nbr_bits = 0;
-        int N2 = 0;
-    public:
-        twiddle_cache(int bits, int n2): nbr_bits(bits), N2(n2) {
-            // Allocate 2D arrays using heap
-            cos_data = FFTReal::alignedAlloc<T1*>(nbr_bits);
-            sin_data = FFTReal::alignedAlloc<T1*>(nbr_bits);
-            
-            for (int pass = 0; pass < nbr_bits; pass++) {
-                cos_data[pass] = FFTReal::alignedAlloc<T1>(N2);
-                sin_data[pass] = FFTReal::alignedAlloc<T1>(N2);
-                
-                int nbr_coef = 1 << pass;
-                int h_nbr_coef = nbr_coef >> 1;
-                
-                // Skip passes with no coefficients
-                if (h_nbr_coef <= 0) continue;
-                
-                // Initialize for this pass
-                for (int j = 0; j < h_nbr_coef && j < N2; j++) {
-                    T1 angle = (j * M_PI) / nbr_coef;
-                    cos_data[pass][j] = F_COS(angle);
-                    sin_data[pass][j] = F_SIN(angle); // F_COS(M_PI/2 - angle);
-                }
-            }
-        }
-        
-        ~twiddle_cache() {
-            if (cos_data) {
-                for (int i = 0; i < nbr_bits; i++) {
-                    FFTReal::alignedFree(cos_data[i]);
-                    FFTReal::alignedFree(sin_data[i]);
-                }
-                FFTReal::alignedFree(cos_data);
-                FFTReal::alignedFree(sin_data);
-            }
-        }
-        
-        twiddle_cache(twiddle_cache&& other) noexcept :
-            nbr_bits(other.nbr_bits),
-            N2(other.N2),
-            cos_data(std::move(other.cos_data)),
-            sin_data(std::move(other.sin_data))
-        {
-            other.nbr_bits = 0;
-            other.N2 = 0;
-            // other.offsets = nullptr;
-            other.cos_data = nullptr;
-        }
-        
-        // Implement move assignment
-        twiddle_cache& operator=(twiddle_cache&& other) noexcept {
-            if (this != &other) {
-                alignedFree(cos_data);
-                alignedFree(sin_data);
-                
-                nbr_bits = other.nbr_bits;
-                N2 = other.N2;
-                cos_data = std::move(other.cos_data);
-                sin_data = std::move(other.sin_data);
-                
-                nbr_bits = 0;
-                N2 = 0;
-                other.cos_data = nullptr;
-                other.sin_data = nullptr;
-            }
-            return *this;
-        }
-        
-        // Delete copy constructor and assignment to avoid double-free issues
-        twiddle_cache(const twiddle_cache&) = delete;
-        twiddle_cache& operator=(const twiddle_cache&) = delete;
-        
-        inline void get_twiddle(int pass, int j, T1& cos_val, T1& sin_val) const
-        {
-            if (pass >= 0 && pass < nbr_bits && j >= 0 && j < N2) {
-                cos_val = cos_data[pass][j];
-                sin_val = sin_data[pass][j];
-            }
-        }
-    };
-    */
     
 protected:
     
@@ -2039,7 +1961,7 @@ protected:
             int total_coef = 0;
             
             // Allocate with alignment
-            offsets = FFTReal::alignedAlloc<int>(nbr_bits + 1);
+            offsets = FFTReal_O::alignedAlloc<int>(nbr_bits + 1);
             
             // Calculate total size needed
             for (int pass = 0; pass < nbr_bits; pass++) {
@@ -2049,7 +1971,7 @@ protected:
             }
             offsets[nbr_bits] = total_coef;
             
-            cos_data = FFTReal::alignedAlloc<T1>(total_coef);
+            cos_data = FFTReal_O::alignedAlloc<T1>(total_coef);
             
             // Calculate and store trig values in flat array
             for (int pass = 0; pass < nbr_bits; pass++) {
@@ -2064,8 +1986,8 @@ protected:
         }
         
         ~TrigoLookup() {
-            FFTReal::alignedFree(offsets);
-            FFTReal::alignedFree(cos_data);
+            FFTReal_O::alignedFree(offsets);
+            FFTReal_O::alignedFree(cos_data);
         }
         
         // Get pointer to the cosine values for a specific pass
@@ -2111,7 +2033,7 @@ protected:
         int N{0}, nbr_bits{0};
     public:
         BitRevLUT(int bits, int n) : nbr_bits(bits), N(n) {
-            indices = FFTReal::alignedAlloc<int>(N);
+            indices = FFTReal_O::alignedAlloc<int>(N);
             for (int i = 0; i < N; i++) {
                 int rev = 0;
                 for (int j = 0; j < nbr_bits; j++) {
@@ -2155,7 +2077,7 @@ protected:
         BitRevLUT& operator=(const BitRevLUT&) = delete;
         
         ~BitRevLUT() {
-            FFTReal::alignedFree(indices);
+            FFTReal_O::alignedFree(indices);
         }
     };
 
@@ -2234,8 +2156,10 @@ protected:
         const float* __restrict x,
         float* __restrict f)
     {
-        if (_nbr_bits > 2) {
+        if (_nbr_bits > 2)
+        {
             float *sf, *df;
+            
             if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 sf = f;
@@ -2481,6 +2405,7 @@ protected:
     void do_fft_neon_f1_O(const float *_Nonnull x, float *_Nonnull f)
     {
         float c, s;
+        
         if (likely(_nbr_bits > 2)) {
             float *sf, *df;
             
@@ -2685,6 +2610,7 @@ protected:
     {
         if (_nbr_bits > 2) {
             double *sf, *df;
+            
             if (_nbr_bits & 1) {
                 df = buffer_ptr;
                 sf = f;
@@ -2885,6 +2811,7 @@ protected:
     void do_fft_neon_d1_O(const double *_Nonnull x, double *_Nonnull f)
     {
         double c, s;
+        
         if (likely(_nbr_bits > 2)) {
             double *sf, *df;
             
@@ -3905,6 +3832,7 @@ protected:
     void do_fft_neon_f2(const simd_float2 *_Nonnull x, simd_float2 *_Nonnull f)
     {
         float c, s;
+        
         if (likely(_nbr_bits > 2)) {
             simd_float2 *sf, *df;
             
@@ -4103,6 +4031,7 @@ protected:
     void do_fft_neon_d2(const simd_double2 *_Nonnull x, simd_double2 *_Nonnull f)
     {
         double c, s;
+        
         if (likely(_nbr_bits > 2)) {
             simd_double2 *sf, *df;
             
@@ -4335,6 +4264,7 @@ protected:
     void do_fft_neon_f4(const simd_float4 *_Nonnull x, simd_float4 *_Nonnull f)
     {
         float c, s;
+        
         if (likely(_nbr_bits > 2)) {
             simd_float4 *sf, *df;
             
@@ -4538,6 +4468,7 @@ protected:
     void do_fft_neon_d4(const simd_double4 *_Nonnull x, simd_double4 *_Nonnull f)
     {
         double c, s;
+        
         if (likely(_nbr_bits > 2)) {
             simd_double4 *sf, *df;
             
@@ -6181,7 +6112,7 @@ protected:
                     float64x2_t sfr_0_low = vld1q_f64((double*)&sfr[0]);
                     float64x2_t sfr_0_high = vld1q_f64((double*)&sfr[0] + 2);
                     float64x2_t sfr_nbr_coef_low = vld1q_f64((double*)&sfr[nbr_coef]);
-                    float64x2_t sfr_nbr_coef_high = vld1q_f64((double*)&sfr[nbr_coef].f[2]);
+                    float64x2_t sfr_nbr_coef_high = vld1q_f64((double*)&sfr[nbr_coef] + 2);   // was .f[2] — plain ptr math (same address; portable to the NDK vector type)
                     
                     vst1q_f64((double*)&df1r[0], vaddq_f64(sfr_0_low, sfr_nbr_coef_low));
                     vst1q_f64((double*)&df1r[0] + 2, vaddq_f64(sfr_0_high, sfr_nbr_coef_high));
@@ -7613,7 +7544,6 @@ protected:
         }
     }
     
-    
     void do_ifft_neon_f8(const simd_float8 *f, simd_float8 *x)
     {
         const float c2 = 2.0f;
@@ -7795,148 +7725,169 @@ protected:
 
 namespace fft_simd_helpers {
 
-inline void do_fft_simd_f1_impl(
-    const float* x,
-    float* f,
-    int N,
-    int nbr_bits,
-    const int* bit_rev_lut,
-    float* buffer_ptr,
-    void* twiddle_cache_ptr)
-{
-    using T1 = float;
-    T1 c, s;
-    
-    // Cast back to proper type - now we can access it!
-    auto twiddle_cache = static_cast<FFTReal<float>::TwiddleCache*>(twiddle_cache_ptr);
-    
+// FFTReal's passes with the conjugate-pair butterflies 8 wide (2026-10-27, user: "optimizing FFTReal<float> using float8 butterfly and fixing
+// bugs in it"). Same layout, twiddles and pass order as FFTReal_O::do_fft / do_ifft: in every pass >= 3 the pairs j = 1 … h-1 are contiguous
+// runs, so they load as 8 / 4 / 2 lanes (the run is 2^k − 1: the tail after the 8-wide chunks is always 4 + 2 + 1) and the two mirrored
+// outputs (dfi[-j], dfi[nbr-j]) go out lane-reversed. One template for float and double. Fixed: the old forward helpers' passes 1+2 paired
+// x0±x2 (wrong — FFTReal pairs x0±x1, x2±x3); the old inverse ran its last pass twice (the scalar loop restarted at 0).
+template <class S, int W> using fr_v = S __attribute__((ext_vector_type(W)));
+template <class S, int W> static inline fr_v<S, W> fr_ld(const S *p) { fr_v<S, W> v; __builtin_memcpy(&v, p, sizeof v); return v; }
+template <class S, int W> static inline void fr_st(S *p, fr_v<S, W> v) { __builtin_memcpy(p, &v, sizeof v); }
+template <class S, int W> static inline fr_v<S, W> fr_rev(fr_v<S, W> v) {
+    if constexpr (W == 8) return __builtin_shufflevector(v, v, 7, 6, 5, 4, 3, 2, 1, 0);
+    else if constexpr (W == 4) return __builtin_shufflevector(v, v, 3, 2, 1, 0);
+    else return __builtin_shufflevector(v, v, 1, 0);
+}
+template <class S, int W>                                                   // forward pairs j … j+W-1 of one block
+static inline void fr_fwd_pairs(int j, int nbr, const S *cp, const S *sp, const S *s1r, const S *s1i, const S *s2r, const S *s2i, S *dr, S *di) {
+    using V = fr_v<S, W>;
+    const V c = fr_ld<S, W>(cp + j), sn = fr_ld<S, W>(sp + j);
+    const V a1r = fr_ld<S, W>(s1r + j), a1i = fr_ld<S, W>(s1i + j), a2r = fr_ld<S, W>(s2r + j), a2i = fr_ld<S, W>(s2i + j);
+    V v = a2r * c - a2i * sn;
+    fr_st<S, W>(dr + j, a1r + v);
+    fr_st<S, W>(di - j - (W - 1), fr_rev<S, W>(a1r - v));                  // dfi[-j]
+    v = a2r * sn + a2i * c;
+    fr_st<S, W>(di + j, v + a1i);
+    fr_st<S, W>(di + nbr - j - (W - 1), fr_rev<S, W>(v - a1i));            // dfi[nbr - j]
+}
+template <class S, int W>                                                   // inverse pairs j … j+W-1 of one block
+static inline void fr_inv_pairs(int j, int nbr, const S *cp, const S *sp, const S *sr, const S *si, S *d1r, S *d1i, S *d2r, S *d2i) {
+    using V = fr_v<S, W>;
+    const V a = fr_ld<S, W>(sr + j), b = fr_rev<S, W>(fr_ld<S, W>(si - j - (W - 1)));             // sfi[-j]
+    const V e = fr_ld<S, W>(si + j), g = fr_rev<S, W>(fr_ld<S, W>(si + nbr - j - (W - 1)));       // sfi[nbr - j]
+    fr_st<S, W>(d1r + j, a + b);
+    fr_st<S, W>(d1i + j, e - g);
+    const V c = fr_ld<S, W>(cp + j), sn = fr_ld<S, W>(sp + j), vr = a - b, vi = e + g;
+    fr_st<S, W>(d2r + j, vr * c + vi * sn);
+    fr_st<S, W>(d2i + j, vi * c - vr * sn);
+}
+template <class S, int W> static inline fr_v<S, 4> fr_lanes4(fr_v<S, W> v, int h) {   // lanes h … h+3 (h = 0 or 4)
+    if constexpr (W == 4) return v; else return h ? __builtin_shufflevector(v, v, 4, 5, 6, 7) : __builtin_shufflevector(v, v, 0, 1, 2, 3);
+}
+template <class S, int W> static inline void fr_set4(fr_v<S, W> &v, int h, fr_v<S, 4> a) {   // lanes h … h+3 = a
+    if constexpr (W == 4) v = a;
+    else { fr_v<S, 4> lo = __builtin_shufflevector(v, v, 0, 1, 2, 3), hi = __builtin_shufflevector(v, v, 4, 5, 6, 7);
+           if (h) hi = a; else lo = a; v = __builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7); }
+}
+template <class S> static inline void fr_tr4(fr_v<S, 4> a, fr_v<S, 4> b, fr_v<S, 4> c, fr_v<S, 4> d,
+                                            fr_v<S, 4> &r0, fr_v<S, 4> &r1, fr_v<S, 4> &r2, fr_v<S, 4> &r3) {   // rows → columns
+    const fr_v<S, 4> t0 = __builtin_shufflevector(a, b, 0, 4, 1, 5), t1 = __builtin_shufflevector(a, b, 2, 6, 3, 7);
+    const fr_v<S, 4> t2 = __builtin_shufflevector(c, d, 0, 4, 1, 5), t3 = __builtin_shufflevector(c, d, 2, 6, 3, 7);
+    r0 = __builtin_shufflevector(t0, t2, 0, 1, 4, 5); r1 = __builtin_shufflevector(t0, t2, 2, 3, 6, 7);
+    r2 = __builtin_shufflevector(t1, t3, 0, 1, 4, 5); r3 = __builtin_shufflevector(t1, t3, 2, 3, 6, 7);
+}
+// PASSES 1 + 2 + 3 FUSED, pffft-style (2026-10-27, user: "go for it"): lut[4g + k] = base(g) + {0, N/2, N/4, 3N/4}[k] and the group pass 3
+// pairs with g (g + 1) sits at base(g) + N/8, so looping over the BASES (not the groups) makes every input load contiguous: 4 groups per step
+// = 8 float4 loads, the radix-4 + pass-3 butterflies in lanes, a 4×4 transpose, two stores per group at 4·g (= g's 8-group in sf, where
+// pass 3 wrote it). Same arithmetic per element as the scalar passes. N >= 32.
+template <class S, int W>                                                   // W = 4 or 8 bases per step
+static inline void fr_fwd_first3(const S *x, S *sf, int N, const int *lut) {
+    using V = fr_v<S, W>;
+    const int Q = N >> 2, E = N >> 3;
+    const S sq2 = SQ2_2;
+    for (int b = 0; b < E; b += W) {
+        const V x0 = fr_ld<S, W>(x + b),     x1 = fr_ld<S, W>(x + b + 2 * Q),     x2 = fr_ld<S, W>(x + b + Q),     x3 = fr_ld<S, W>(x + b + 3 * Q);
+        const V y0 = fr_ld<S, W>(x + b + E), y1 = fr_ld<S, W>(x + b + E + 2 * Q), y2 = fr_ld<S, W>(x + b + E + Q), y3 = fr_ld<S, W>(x + b + E + 3 * Q);
+        const V d0 = x0 + x1 + x2 + x3, d1 = x0 - x1, d2 = x0 + x1 - x2 - x3, d3 = x2 - x3;   // passes 1 + 2, group g
+        const V d4 = y0 + y1 + y2 + y3, d5 = y0 - y1, d6 = y0 + y1 - y2 - y3, d7 = y2 - y3;   // … and g + 1
+        const V s0 = d0 + d4, s4 = d0 - d4, s2 = d2, s6 = d6;                                // pass 3
+        V v = (d5 - d7) * sq2;
+        const V s1 = d1 + v, s3 = d1 - v;
+        v = (d5 + d7) * sq2;
+        const V s5 = v + d3, s7 = v - d3;
+        for (int h = 0; h < W; h += 4) {                                     // 4 lanes per 4×4 transpose
+            fr_v<S, 4> r0, r1, r2, r3, q0, q1, q2, q3;
+            fr_tr4<S>(fr_lanes4<S, W>(s0, h), fr_lanes4<S, W>(s1, h), fr_lanes4<S, W>(s2, h), fr_lanes4<S, W>(s3, h), r0, r1, r2, r3);
+            fr_tr4<S>(fr_lanes4<S, W>(s4, h), fr_lanes4<S, W>(s5, h), fr_lanes4<S, W>(s6, h), fr_lanes4<S, W>(s7, h), q0, q1, q2, q3);
+            const int bb = b + h;
+            S *p0 = sf + 4 * lut[4 * bb], *p1 = sf + 4 * lut[4 * (bb + 1)], *p2 = sf + 4 * lut[4 * (bb + 2)], *p3 = sf + 4 * lut[4 * (bb + 3)];
+            fr_st<S, 4>(p0, r0); fr_st<S, 4>(p0 + 4, q0);
+            fr_st<S, 4>(p1, r1); fr_st<S, 4>(p1 + 4, q1);
+            fr_st<S, 4>(p2, r2); fr_st<S, 4>(p2 + 4, q2);
+            fr_st<S, 4>(p3, r3); fr_st<S, 4>(p3 + 4, q3);
+        }
+    }
+}
+// The inverse's mirror: the antepenultimate + the last two passes with the bit-reversed scatter, fused — each lane's 8-group loads (two
+// float4 at 4·g) and transposes, the butterflies run in lanes, and every output store is contiguous (x[base + …] over 4 consecutive bases).
+template <class S, int W>
+static inline void fr_inv_last3(const S *sf, S *x, int N, const int *lut, S mul) {
+    using V = fr_v<S, W>;
+    const int Q = N >> 2, E = N >> 3;
+    const S sq2 = SQ2_2, c2 = 2.0;
+    for (int b = 0; b < E; b += W) {
+        V s0, s1, s2, s3, s4, s5, s6, s7;
+        for (int h = 0; h < W; h += 4) {                                     // 4 lanes per 4×4 transpose
+            const int bb = b + h;
+            const S *p0 = sf + 4 * lut[4 * bb], *p1 = sf + 4 * lut[4 * (bb + 1)], *p2 = sf + 4 * lut[4 * (bb + 2)], *p3 = sf + 4 * lut[4 * (bb + 3)];
+            fr_v<S, 4> a0, a1, a2, a3, a4, a5, a6, a7;
+            fr_tr4<S>(fr_ld<S, 4>(p0), fr_ld<S, 4>(p1), fr_ld<S, 4>(p2), fr_ld<S, 4>(p3), a0, a1, a2, a3);
+            fr_tr4<S>(fr_ld<S, 4>(p0 + 4), fr_ld<S, 4>(p1 + 4), fr_ld<S, 4>(p2 + 4), fr_ld<S, 4>(p3 + 4), a4, a5, a6, a7);
+            fr_set4<S, W>(s0, h, a0); fr_set4<S, W>(s1, h, a1); fr_set4<S, W>(s2, h, a2); fr_set4<S, W>(s3, h, a3);
+            fr_set4<S, W>(s4, h, a4); fr_set4<S, W>(s5, h, a5); fr_set4<S, W>(s6, h, a6); fr_set4<S, W>(s7, h, a7);
+        }
+        const V vr = s1 - s3, vi = s5 + s7;                                                   // antepenultimate pass
+        const V d0 = s0 + s4, d1 = s1 + s3, d2 = s2 * c2, d3 = s5 - s7;
+        const V d4 = s0 - s4, d5 = (vr + vi) * sq2, d6 = s6 * c2, d7 = (vi - vr) * sq2;
+        V b_0 = d0 + d2, b_2 = d0 - d2, b_1 = d1 * c2, b_3 = d3 * c2;                         // penultimate + last, group g
+        fr_st<S, W>(x + b,         (b_0 + b_1) * mul); fr_st<S, W>(x + b + 2 * Q,     (b_0 - b_1) * mul);
+        fr_st<S, W>(x + b + Q,     (b_2 + b_3) * mul); fr_st<S, W>(x + b + 3 * Q,     (b_2 - b_3) * mul);
+        b_0 = d4 + d6; b_2 = d4 - d6; b_1 = d5 * c2; b_3 = d7 * c2;                           // … and g + 1
+        fr_st<S, W>(x + b + E,     (b_0 + b_1) * mul); fr_st<S, W>(x + b + E + 2 * Q, (b_0 - b_1) * mul);
+        fr_st<S, W>(x + b + E + Q, (b_2 + b_3) * mul); fr_st<S, W>(x + b + E + 3 * Q, (b_2 - b_3) * mul);
+    }
+}
+
+template <class S>
+static inline void fr_fft(const S *x, S *f, int N, int nbr_bits, const int *lut, S *buffer_ptr, const typename FFTReal_O<S>::TwiddleCache *tw) {
     if (nbr_bits > 2) {
-        float *sf, *df;
-        if (nbr_bits & 1) {
-            df = buffer_ptr;
-            sf = f;
-        } else {
-            df = f;
-            sf = buffer_ptr;
-        }
-        
-        auto lut = bit_rev_lut;
-        
-        // ================================================================
-        // First and second pass - WITH simd_float8
-        // ================================================================
-        int i;
-        for (i = 0; i + 32 <= N; i += 32) {
-            simd_float8 x0, x1, x2, x3;
-            
-            for (int j = 0; j < 8; j++) {
-                int idx = i + j * 4;
-                x0[j] = x[lut[idx]];
-                x1[j] = x[lut[idx + 1]];
-                x2[j] = x[lut[idx + 2]];
-                x3[j] = x[lut[idx + 3]];
+        S *sf, *df;
+        if (nbr_bits & 1) { df = buffer_ptr; sf = f; } else { df = f; sf = buffer_ptr; }
+        if (N >= 64) fr_fwd_first3<S, 8>(x, sf, N, lut);                    // passes 1 + 2 + 3 fused: 8 bases per step (float8)…
+        else if (N == 32) fr_fwd_first3<S, 4>(x, sf, N, lut);               // … 4 at N = 32 (float4)
+        else {
+            for (int i = 0; i < N; i += 4) {                                // passes 1 + 2 at once (bit-reversed gather)
+                const S x0 = x[lut[i]], x1 = x[lut[i + 1]], x2 = x[lut[i + 2]], x3 = x[lut[i + 3]];
+                S *d2 = df + i;
+                d2[0] = x0 + x1 + x2 + x3;
+                d2[1] = x0 - x1;
+                d2[2] = x0 + x1 - x2 - x3;
+                d2[3] = x2 - x3;
             }
-            
-            simd_float8 t0 = x0 + x2;
-            simd_float8 t1 = x1 + x3;
-            simd_float8 t2 = x0 - x2;
-            simd_float8 t3 = x1 - x3;
-            
-            simd_float8 out0 = t0 + t1;
-            simd_float8 out2 = t0 - t1;
-            simd_float8 out1 = t2;
-            simd_float8 out3 = t3;
-            
-            for (int j = 0; j < 8; j++) {
-                int idx = i + j * 4;
-                df[idx]     = out0[j];
-                df[idx + 1] = out1[j];
-                df[idx + 2] = out2[j];
-                df[idx + 3] = out3[j];
+            const S sq2 = SQ2_2;
+            for (int i = 0; i < N; i += 8) {                                // pass 3
+                S *s2 = sf + i; const S *d2 = df + i;
+                s2[0] = d2[0] + d2[4]; s2[4] = d2[0] - d2[4]; s2[2] = d2[2]; s2[6] = d2[6];
+                S v = (d2[5] - d2[7]) * sq2; s2[1] = d2[1] + v; s2[3] = d2[1] - v;
+                v = (d2[5] + d2[7]) * sq2; s2[5] = v + d2[3]; s2[7] = v - d2[3];
             }
         }
-        
-        for (; i < N; i += 4) {
-            auto df2 = &df[i];
-            auto x0_s = x[lut[i]];
-            auto x1_s = x[lut[i + 1]];
-            auto x2_s = x[lut[i + 2]];
-            auto x3_s = x[lut[i + 3]];
-            
-            df2[0] = x0_s + x1_s + x2_s + x3_s;
-            df2[1] = x0_s - x1_s;
-            df2[2] = x0_s + x1_s - x2_s - x3_s;
-            df2[3] = x2_s - x3_s;
-        }
-        
-        // ================================================================
-        // Third pass
-        // ================================================================
-        const float SQ2_2_f = SQ2_2;
-        
-        for (i = 0; i < N; i += 8) {
-            auto sf2 = &sf[i];
-            auto df2 = &df[i];
-            
-            sf2[0] = df2[0] + df2[4];
-            sf2[4] = df2[0] - df2[4];
-            sf2[2] = df2[2];
-            sf2[6] = df2[6];
-            
-            float v = (df2[5] - df2[7]) * SQ2_2_f;
-            sf2[1] = df2[1] + v;
-            sf2[3] = df2[1] - v;
-            
-            v = (df2[5] + df2[7]) * SQ2_2_f;
-            sf2[5] = v + df2[3];
-            sf2[7] = v - df2[3];
-        }
-        
-        // ================================================================
-        // Remaining passes with twiddle factors
-        // ================================================================
-        for (auto pass = 3; pass < nbr_bits; ++pass) {
-            auto nbr_coef = 1 << pass;
-            auto h_nbr_coef = nbr_coef >> 1;
-            auto d_nbr_coef = nbr_coef << 1;
-            
-            for (auto idx = 0; idx < N; idx += d_nbr_coef) {
-                auto sf1r = sf + idx;
-                auto sf2r = sf1r + nbr_coef;
-                auto dfr = df + idx;
-                auto dfi = dfr + nbr_coef;
-                
-                dfr[0] = sf1r[0] + sf2r[0];
-                dfi[0] = sf1r[0] - sf2r[0];
-                dfr[h_nbr_coef] = sf1r[h_nbr_coef];
-                dfi[h_nbr_coef] = sf2r[h_nbr_coef];
-                
-                auto sf1i = &sf1r[h_nbr_coef];
-                auto sf2i = &sf1i[nbr_coef];
-                
-                for (int j = 1; j < h_nbr_coef; ++j) {
-                    twiddle_cache->get_twiddle(pass, j, c, s);
-                    
-                    float v = sf2r[j] * c - sf2i[j] * s;
-                    dfr[j] = sf1r[j] + v;
-                    dfi[-j] = sf1r[j] - v;
-                    
-                    v = sf2r[j] * s + sf2i[j] * c;
-                    dfi[j] = v + sf1i[j];
-                    dfi[nbr_coef - j] = v - sf1i[j];
+        for (int pass = 3; pass < nbr_bits; ++pass) {
+            const int nbr = 1 << pass, h = nbr >> 1, dn = nbr << 1;
+            const S *cp = tw->get_cos_ptr(pass), *sp = tw->get_sin_ptr(pass);
+            for (int i = 0; i < N; i += dn) {
+                const S *s1r = sf + i, *s2r = s1r + nbr, *s1i = s1r + h, *s2i = s1i + nbr;
+                S *dr = df + i, *di = dr + nbr;
+                dr[0] = s1r[0] + s2r[0]; di[0] = s1r[0] - s2r[0];           // extreme coefficients are real
+                dr[h] = s1r[h]; di[h] = s2r[h];
+                int j = 1;
+                for (; j + 8 <= h; j += 8) fr_fwd_pairs<S, 8>(j, nbr, cp, sp, s1r, s1i, s2r, s2i, dr, di);
+                if (j + 4 <= h) { fr_fwd_pairs<S, 4>(j, nbr, cp, sp, s1r, s1i, s2r, s2i, dr, di); j += 4; }
+                if (j + 2 <= h) { fr_fwd_pairs<S, 2>(j, nbr, cp, sp, s1r, s1i, s2r, s2i, dr, di); j += 2; }
+                for (; j < h; ++j) {
+                    const S c = cp[j], sn = sp[j];
+                    S v = s2r[j] * c - s2i[j] * sn;
+                    dr[j] = s1r[j] + v; di[-j] = s1r[j] - v;
+                    v = s2r[j] * sn + s2i[j] * c;
+                    di[j] = v + s1i[j]; di[nbr - j] = v - s1i[j];
                 }
             }
-            
-            auto tmp = df;
-            df = sf;
-            sf = tmp;
+            S *t = df; df = sf; sf = t;
         }
-        
     } else if (nbr_bits == 2) {
         f[1] = x[0] - x[2];
         f[3] = x[1] - x[3];
-        const float b_0 = x[0] + x[2];
-        const float b_2 = x[1] + x[3];
+        const S b_0 = x[0] + x[2], b_2 = x[1] + x[3];
         f[0] = b_0 + b_2;
         f[2] = b_0 - b_2;
     } else if (nbr_bits == 1) {
@@ -7945,562 +7896,81 @@ inline void do_fft_simd_f1_impl(
     } else {
         f[0] = x[0];
     }
-    // Negate imaginary parts for standard DFT convention: exp(-j*2π*nk/N)
-    // for (int i = N/2 + 1; i < N; i++) { f[i] = -f[i]; }
 }
-
-inline void do_fft_simd_d1_impl(
-    const double* x,
-    double* f,
-    int N,
-    int nbr_bits,
-    const int* bit_rev_lut,
-    double* buffer_ptr,
-    void* twiddle_cache_ptr)
-{
-    using T1 = double;
-    T1 c, s;
-    
-    auto twiddle_cache = static_cast<FFTReal<double>::TwiddleCache*>(twiddle_cache_ptr);
-    
+template <class S>
+static inline void fr_ifft(S *f, S *x, int N, int nbr_bits, const int *lut_ptr, S *buffer_ptr, const typename FFTReal_O<S>::TwiddleCache *tw, bool do_scale) {
+    const S c2 = 2.0;
+    const S mul = do_scale ? S(1) / (S)N : S(1);
     if (nbr_bits > 2) {
-        double *sf, *df;
-        if (nbr_bits & 1) {
-            df = buffer_ptr;
-            sf = f;
-        } else {
-            df = f;
-            sf = buffer_ptr;
-        }
-        
-        auto lut = bit_rev_lut;
-        
-        // ================================================================
-        // First and second pass - WITH simd_double4
-        // ================================================================
-        int i;
-        for (i = 0; i + 16 <= N; i += 16) {
-            // Process 4 radix-4 butterflies using simd_double4
-            simd_double4 x0, x1, x2, x3;
-            
-            for (int j = 0; j < 4; j++) {
-                int idx = i + j * 4;
-                x0[j] = x[lut[idx]];
-                x1[j] = x[lut[idx + 1]];
-                x2[j] = x[lut[idx + 2]];
-                x3[j] = x[lut[idx + 3]];
-            }
-            
-            simd_double4 t0 = x0 + x2;
-            simd_double4 t1 = x1 + x3;
-            simd_double4 t2 = x0 - x2;
-            simd_double4 t3 = x1 - x3;
-            
-            simd_double4 out0 = t0 + t1;
-            simd_double4 out2 = t0 - t1;
-            simd_double4 out1 = t2;
-            simd_double4 out3 = t3;
-            
-            for (int j = 0; j < 4; j++) {
-                int idx = i + j * 4;
-                df[idx]     = out0[j];
-                df[idx + 1] = out1[j];
-                df[idx + 2] = out2[j];
-                df[idx + 3] = out3[j];
-            }
-        }
-        
-        // Remainder scalar
-        for (; i < N; i += 4) {
-            auto df2 = &df[i];
-            auto x0_s = x[lut[i]];
-            auto x1_s = x[lut[i + 1]];
-            auto x2_s = x[lut[i + 2]];
-            auto x3_s = x[lut[i + 3]];
-            
-            df2[0] = x0_s + x1_s + x2_s + x3_s;
-            df2[1] = x0_s - x1_s;
-            df2[2] = x0_s + x1_s - x2_s - x3_s;
-            df2[3] = x2_s - x3_s;
-        }
-        
-        // ================================================================
-        // Third pass - radix-8
-        // ================================================================
-        const double SQ2_2_d = SQ2_2;
-        
-        for (i = 0; i < N; i += 8) {
-            auto sf2 = &sf[i];
-            auto df2 = &df[i];
-            
-            sf2[0] = df2[0] + df2[4];
-            sf2[4] = df2[0] - df2[4];
-            sf2[2] = df2[2];
-            sf2[6] = df2[6];
-            
-            double v = (df2[5] - df2[7]) * SQ2_2_d;
-            sf2[1] = df2[1] + v;
-            sf2[3] = df2[1] - v;
-            
-            v = (df2[5] + df2[7]) * SQ2_2_d;
-            sf2[5] = v + df2[3];
-            sf2[7] = v - df2[3];
-        }
-        
-        // ================================================================
-        // Remaining passes with twiddle factors
-        // ================================================================
-        for (auto pass = 3; pass < nbr_bits; ++pass) {
-            auto nbr_coef = 1 << pass;
-            auto h_nbr_coef = nbr_coef >> 1;
-            auto d_nbr_coef = nbr_coef << 1;
-            
-            for (auto idx = 0; idx < N; idx += d_nbr_coef) {
-                auto sf1r = sf + idx;
-                auto sf2r = sf1r + nbr_coef;
-                auto dfr = df + idx;
-                auto dfi = dfr + nbr_coef;
-                
-                dfr[0] = sf1r[0] + sf2r[0];
-                dfi[0] = sf1r[0] - sf2r[0];
-                dfr[h_nbr_coef] = sf1r[h_nbr_coef];
-                dfi[h_nbr_coef] = sf2r[h_nbr_coef];
-                
-                auto sf1i = &sf1r[h_nbr_coef];
-                auto sf2i = &sf1i[nbr_coef];
-                
-                for (int j = 1; j < h_nbr_coef; ++j) {
-                    twiddle_cache->get_twiddle(pass, j, c, s);
-                    
-                    double v = sf2r[j] * c - sf2i[j] * s;
-                    dfr[j] = sf1r[j] + v;
-                    dfi[-j] = sf1r[j] - v;
-                    
-                    v = sf2r[j] * s + sf2i[j] * c;
-                    dfi[j] = v + sf1i[j];
-                    dfi[nbr_coef - j] = v - sf1i[j];
+        S *sf = f, *df, *df_temp;
+        const bool fused = N >= 32;                                         // the last 3 passes fused below: no antepenultimate write, so the
+        if ((nbr_bits & 1) != fused) { df = buffer_ptr; df_temp = x; }      // parity flips — the passes >= 3 then end in the scratch buffer,
+        else                         { df = x; df_temp = buffer_ptr; }      // never in x (the fused scatter writes x)
+        for (int pass = nbr_bits - 1; pass >= 3; --pass) {
+            const int nbr = 1 << pass, h = nbr >> 1, dn = nbr << 1;
+            const S *cp = tw->get_cos_ptr(pass), *sp = tw->get_sin_ptr(pass);
+            for (int i = 0; i < N; i += dn) {
+                const S *sr = sf + i, *si = sr + nbr;
+                S *d1r = df + i, *d2r = d1r + nbr, *d1i = d1r + h, *d2i = d1i + nbr;
+                d1r[0] = sr[0] + sr[nbr]; d2r[0] = sr[0] - sr[nbr];         // extreme coefficients are real
+                d1r[h] = sr[h] * c2; d2r[h] = si[h] * c2;
+                int j = 1;
+                for (; j + 8 <= h; j += 8) fr_inv_pairs<S, 8>(j, nbr, cp, sp, sr, si, d1r, d1i, d2r, d2i);
+                if (j + 4 <= h) { fr_inv_pairs<S, 4>(j, nbr, cp, sp, sr, si, d1r, d1i, d2r, d2i); j += 4; }
+                if (j + 2 <= h) { fr_inv_pairs<S, 2>(j, nbr, cp, sp, sr, si, d1r, d1i, d2r, d2i); j += 2; }
+                for (; j < h; ++j) {
+                    d1r[j] = sr[j] + si[-j];
+                    d1i[j] = si[j] - si[nbr - j];
+                    const S c = cp[j], sn = sp[j], vr = sr[j] - si[-j], vi = si[j] + si[nbr - j];
+                    d2r[j] = vr * c + vi * sn;
+                    d2i[j] = vi * c - vr * sn;
                 }
             }
-            
-            auto tmp = df;
-            df = sf;
-            sf = tmp;
+            if (pass < nbr_bits - 1) { S *t = df; df = sf; sf = t; }
+            else { sf = df; df = df_temp; }
         }
-        
+        if (fused) { if (N >= 64) fr_inv_last3<S, 8>(sf, x, N, lut_ptr, mul); else fr_inv_last3<S, 4>(sf, x, N, lut_ptr, mul); return; }
+        const S sq2 = SQ2_2;
+        for (int i = 0; i < N; i += 8) {                                    // antepenultimate pass
+            S *d2 = df + i; const S *s2 = sf + i;
+            const S vr = s2[1] - s2[3], vi = s2[5] + s2[7];
+            d2[0] = s2[0] + s2[4]; d2[1] = s2[1] + s2[3]; d2[2] = s2[2] * c2; d2[3] = s2[5] - s2[7];
+            d2[4] = s2[0] - s2[4]; d2[5] = (vr + vi) * sq2; d2[6] = s2[6] * c2; d2[7] = (vi - vr) * sq2;
+        }
+        for (int i = 0; i < N; i += 8) {                                    // penultimate + last pass at once (bit-reversed scatter), once
+            const int *lut = lut_ptr + i; const S *s2 = df + i;
+            S b_0 = s2[0] + s2[2], b_2 = s2[0] - s2[2], b_1 = s2[1] * c2, b_3 = s2[3] * c2;
+            x[lut[0]] = (b_0 + b_1) * mul; x[lut[1]] = (b_0 - b_1) * mul; x[lut[2]] = (b_2 + b_3) * mul; x[lut[3]] = (b_2 - b_3) * mul;
+            b_0 = s2[4] + s2[6]; b_2 = s2[4] - s2[6]; b_1 = s2[5] * c2; b_3 = s2[7] * c2;
+            x[lut[4]] = (b_0 + b_1) * mul; x[lut[5]] = (b_0 - b_1) * mul; x[lut[6]] = (b_2 + b_3) * mul; x[lut[7]] = (b_2 - b_3) * mul;
+        }
     } else if (nbr_bits == 2) {
-        // 4-point FFT
-        f[1] = x[0] - x[2];
-        f[3] = x[1] - x[3];
-        const double b_0 = x[0] + x[2];
-        const double b_2 = x[1] + x[3];
-        f[0] = b_0 + b_2;
-        f[2] = b_0 - b_2;
+        const S b_0 = f[0] + f[2], b_2 = f[0] - f[2];
+        x[0] = (b_0 + f[1] * c2) * mul;
+        x[2] = (b_0 - f[1] * c2) * mul;
+        x[1] = (b_2 + f[3] * c2) * mul;
+        x[3] = (b_2 - f[3] * c2) * mul;
     } else if (nbr_bits == 1) {
-        // 2-point FFT
-        f[0] = x[0] + x[1];
-        f[1] = x[0] - x[1];
+        x[0] = (f[0] + f[1]) * mul;
+        x[1] = (f[0] - f[1]) * mul;
     } else {
-        // 1-point FFT
-        f[0] = x[0];
-    }
-    // Negate imaginary parts for standard DFT convention: exp(-j*2π*nk/N)
-    // for (int i = N/2 + 1; i < N; i++) { f[i] = -f[i]; }
-}
-
-// ============================================================================
-// IFFT for float using simd_float8
-// ============================================================================
-
-inline void do_ifft_simd_f1_impl(
-    float* _Nonnull f,
-    float* _Nonnull x,
-    int N,
-    int nbr_bits,
-    const int* _Nonnull bit_rev_lut,
-    float* _Nonnull buffer_ptr,
-    void* _Nonnull twiddle_cache_ptr,
-    bool do_scale)
-{
-    using T1 = float;
-    T1 c, s;
-    const float c2 = 2.0f;
-    float mul = 1.0f;
-    if (do_scale) mul = 1.0f / static_cast<float>(N);
-    
-    // Negate imaginary parts for standard DFT convention
-    // for (int i = N/2 + 1; i < N; i++) { f[i] = -f[i]; }
-    
-    auto twiddle_cache = static_cast<FFTReal<float>::TwiddleCache*>(twiddle_cache_ptr);
-    
-    if (nbr_bits > 2) {
-        float* sf = const_cast<float*>(f);
-        float* df;
-        float* df_temp;
-        
-        if (nbr_bits & 1) {
-            df = buffer_ptr;
-            df_temp = x;
-        } else {
-            df = x;
-            df_temp = buffer_ptr;
-        }
-        
-        // ================================================================
-        // Inverse passes with vectorization
-        // ================================================================
-        for (auto pass = nbr_bits - 1; pass >= 3; --pass) {
-            auto nbr_coef = 1 << pass;
-            auto h_nbr_coef = nbr_coef >> 1;
-            auto d_nbr_coef = nbr_coef << 1;
-            
-            for (auto i = 0; i < N; i += d_nbr_coef) {
-                auto sfr = &sf[i];
-                auto sfi = &sfr[nbr_coef];
-                auto df1r = &df[i];
-                auto df2r = &df1r[nbr_coef];
-                
-                df1r[0] = sfr[0] + sfr[nbr_coef];
-                df2r[0] = sfr[0] - sfr[nbr_coef];
-                df1r[h_nbr_coef] = sfr[h_nbr_coef] * c2;
-                df2r[h_nbr_coef] = sfi[h_nbr_coef] * c2;
-                
-                auto df1i = &df1r[h_nbr_coef];
-                auto df2i = &df1i[nbr_coef];
-                
-                // Vectorized loop - process 8 at a time
-                int j;
-                for (j = 1; j + 8 <= h_nbr_coef; j += 8) {
-                    // Manual unrolling for 8 iterations
-                    for (int k = 0; k < 8; k++) {
-                        int idx = j + k;
-                        df1r[idx] = sfr[idx] + sfi[-idx];
-                        df1i[idx] = sfi[idx] - sfi[nbr_coef - idx];
-                        
-                        twiddle_cache->get_twiddle(pass, idx, c, s);
-                        
-                        auto vr = sfr[idx] - sfi[-idx];
-                        auto vi = sfi[idx] + sfi[nbr_coef - idx];
-                        
-                        df2r[idx] = vr * c + vi * s;
-                        df2i[idx] = vi * c - vr * s;
-                    }
-                }
-                
-                // Scalar remainder
-                for (; j < h_nbr_coef; ++j) {
-                    df1r[j] = sfr[j] + sfi[-j];
-                    df1i[j] = sfi[j] - sfi[nbr_coef - j];
-                    
-                    twiddle_cache->get_twiddle(pass, j, c, s);
-                    
-                    auto vr = sfr[j] - sfi[-j];
-                    auto vi = sfi[j] + sfi[nbr_coef - j];
-                    
-                    df2r[j] = vr * c + vi * s;
-                    df2i[j] = vi * c - vr * s;
-                }
-            }
-            
-            if (pass < nbr_bits - 1) {
-                auto tmp = df;
-                df = sf;
-                sf = tmp;
-            } else {
-                sf = df;
-                df = df_temp;
-            }
-        }
-        
-        // ================================================================
-        // Antepenultimate pass
-        // ================================================================
-        const float sq2_2 = SQ2_2;
-        
-        for (auto i = 0; i < N; i += 8) {
-            auto df2 = &df[i];
-            auto sf2 = &sf[i];
-            
-            auto vr = sf2[1] - sf2[3];
-            auto vi = sf2[5] + sf2[7];
-            
-            df2[0] = sf2[0] + sf2[4];
-            df2[1] = sf2[1] + sf2[3];
-            df2[2] = sf2[2] * c2;
-            df2[3] = sf2[5] - sf2[7];
-            df2[4] = sf2[0] - sf2[4];
-            df2[5] = (vr + vi) * sq2_2;
-            df2[6] = sf2[6] * c2;
-            df2[7] = (vi - vr) * sq2_2;
-        }
-        
-        // ================================================================
-        // Penultimate and last pass - vectorized with scaling
-        // ================================================================
-        auto lut_ptr = bit_rev_lut;
-        
-        for (auto i = 0; i + 32 <= N; i += 32) {
-            // Process 8 radix-4 butterflies with SIMD
-            for (int block = 0; block < 8; block++) {
-                int base = i + block * 4;
-                auto lut = lut_ptr + base;
-                auto sf2 = &df[base];
-                
-                float b_0 = sf2[0] + sf2[2];
-                float b_2 = sf2[0] - sf2[2];
-                float b_1 = sf2[1] * c2;
-                float b_3 = sf2[3] * c2;
-                
-                x[lut[0]] = (b_0 + b_1) * mul;
-                x[lut[1]] = (b_0 - b_1) * mul;
-                x[lut[2]] = (b_2 + b_3) * mul;
-                x[lut[3]] = (b_2 - b_3) * mul;
-            }
-        }
-        
-        // Scalar remainder
-        for (auto i = 0; i < N; i += 8) {
-            auto lut = lut_ptr + i;
-            auto sf2 = &df[i];
-            
-            auto b_0 = sf2[0] + sf2[2];
-            auto b_2 = sf2[0] - sf2[2];
-            auto b_1 = sf2[1] * c2;
-            auto b_3 = sf2[3] * c2;
-            
-            x[lut[0]] = (b_0 + b_1) * mul;
-            x[lut[1]] = (b_0 - b_1) * mul;
-            x[lut[2]] = (b_2 + b_3) * mul;
-            x[lut[3]] = (b_2 - b_3) * mul;
-            
-            b_0 = sf2[4] + sf2[6];
-            b_2 = sf2[4] - sf2[6];
-            b_1 = sf2[5] * c2;
-            b_3 = sf2[7] * c2;
-            
-            x[lut[4]] = (b_0 + b_1) * mul;
-            x[lut[5]] = (b_0 - b_1) * mul;
-            x[lut[6]] = (b_2 + b_3) * mul;
-            x[lut[7]] = (b_2 - b_3) * mul;
-        }
-    }
-    else if (nbr_bits == 2) {
-        // 4-point IFFT
-        const float b_0 = f[0] + f[2];
-        const float b_2 = f[0] - f[2];
-        x[0] = (b_0 + f[1] * c2) * mul;
-        x[2] = (b_0 - f[1] * c2) * mul;
-        x[1] = (b_2 + f[3] * c2) * mul;
-        x[3] = (b_2 - f[3] * c2) * mul;
-    }
-    else if (nbr_bits == 1) {
-        // 2-point IFFT
-        x[0] = (f[0] + f[1]) * mul;
-        x[1] = (f[0] - f[1]) * mul;
-    }
-    else {
-        // 1-point IFFT
         x[0] = f[0] * mul;
     }
-    // Restore the negated imaginary parts
-   // for (int i = N/2 + 1; i < N; i++) { f[i] = -f[i]; }
 }
 
-// ============================================================================
-// IFFT for double using simd_double4
-// ============================================================================
-
-inline void do_ifft_simd_d1_impl(
-    double* _Nonnull f,
-    double* _Nonnull x,
-    int N,
-    int nbr_bits,
-    const int* _Nonnull bit_rev_lut,
-    double* _Nonnull buffer_ptr,
-    void* _Nonnull twiddle_cache_ptr,
-    bool do_scale)
-{
-    using T1 = double;
-    T1 c, s;
-    const double c2 = 2.0;
-    double mul = 1.0;
-    if (do_scale) mul = 1.0 / double(N);
-   
-    // Negate imaginary parts for standard DFT convention
-
-    //for (int i = N/2 + 1; i < N; i++) { f[i] = -f[i]; }
-    auto twiddle_cache = static_cast<FFTReal<double>::TwiddleCache*>(twiddle_cache_ptr);
-    
-    if (nbr_bits > 2) {
-        double* sf = (double*)f;
-        double* df;
-        double* df_temp;
-        
-        if (nbr_bits & 1) {
-            df = buffer_ptr;
-            df_temp = x;
-        } else {
-            df = x;
-            df_temp = buffer_ptr;
-        }
-        
-        // ================================================================
-        // Inverse passes with vectorization
-        // ================================================================
-        for (auto pass = nbr_bits - 1; pass >= 3; --pass) {
-            auto nbr_coef = 1 << pass;
-            auto h_nbr_coef = nbr_coef >> 1;
-            auto d_nbr_coef = nbr_coef << 1;
-            
-            for (auto i = 0; i < N; i += d_nbr_coef) {
-                auto sfr = &sf[i];
-                auto sfi = &sfr[nbr_coef];
-                auto df1r = &df[i];
-                auto df2r = &df1r[nbr_coef];
-                
-                df1r[0] = sfr[0] + sfr[nbr_coef];
-                df2r[0] = sfr[0] - sfr[nbr_coef];
-                df1r[h_nbr_coef] = sfr[h_nbr_coef] * c2;
-                df2r[h_nbr_coef] = sfi[h_nbr_coef] * c2;
-                
-                auto df1i = &df1r[h_nbr_coef];
-                auto df2i = &df1i[nbr_coef];
-                
-                // Vectorized loop - process 4 at a time
-                int j;
-                for (j = 1; j + 4 <= h_nbr_coef; j += 4) {
-                    // Manual unrolling for 4 iterations
-                    for (int k = 0; k < 4; k++) {
-                        int idx = j + k;
-                        df1r[idx] = sfr[idx] + sfi[-idx];
-                        df1i[idx] = sfi[idx] - sfi[nbr_coef - idx];
-                        
-                        twiddle_cache->get_twiddle(pass, idx, c, s);
-                        
-                        auto vr = sfr[idx] - sfi[-idx];
-                        auto vi = sfi[idx] + sfi[nbr_coef - idx];
-                        
-                        df2r[idx] = vr * c + vi * s;
-                        df2i[idx] = vi * c - vr * s;
-                    }
-                }
-                
-                // Scalar remainder
-                for (; j < h_nbr_coef; ++j) {
-                    df1r[j] = sfr[j] + sfi[-j];
-                    df1i[j] = sfi[j] - sfi[nbr_coef - j];
-                    
-                    twiddle_cache->get_twiddle(pass, j, c, s);
-                    
-                    auto vr = sfr[j] - sfi[-j];
-                    auto vi = sfi[j] + sfi[nbr_coef - j];
-                    
-                    df2r[j] = vr * c + vi * s;
-                    df2i[j] = vi * c - vr * s;
-                }
-            }
-            
-            if (pass < nbr_bits - 1) {
-                auto tmp = df;
-                df = sf;
-                sf = tmp;
-            } else {
-                sf = df;
-                df = df_temp;
-            }
-        }
-        
-        // ================================================================
-        // Antepenultimate pass
-        // ================================================================
-        const double sq2_2 = SQ2_2;
-        
-        for (auto i = 0; i < N; i += 8) {
-            auto df2 = &df[i];
-            auto sf2 = &sf[i];
-            
-            auto vr = sf2[1] - sf2[3];
-            auto vi = sf2[5] + sf2[7];
-            
-            df2[0] = sf2[0] + sf2[4];
-            df2[1] = sf2[1] + sf2[3];
-            df2[2] = sf2[2] * c2;
-            df2[3] = sf2[5] - sf2[7];
-            df2[4] = sf2[0] - sf2[4];
-            df2[5] = (vr + vi) * sq2_2;
-            df2[6] = sf2[6] * c2;
-            df2[7] = (vi - vr) * sq2_2;
-        }
-        
-        // ================================================================
-        // Penultimate and last pass - vectorized with scaling
-        // ================================================================
-        auto lut_ptr = bit_rev_lut;
-        
-        for (auto i = 0; i + 16 <= N; i += 16) {
-            // Process 4 radix-4 butterflies
-            for (int block = 0; block < 4; block++) {
-                int base = i + block * 4;
-                auto lut = lut_ptr + base;
-                auto sf2 = &df[base];
-                
-                double b_0 = sf2[0] + sf2[2];
-                double b_2 = sf2[0] - sf2[2];
-                double b_1 = sf2[1] * c2;
-                double b_3 = sf2[3] * c2;
-                
-                x[lut[0]] = (b_0 + b_1) * mul;
-                x[lut[1]] = (b_0 - b_1) * mul;
-                x[lut[2]] = (b_2 + b_3) * mul;
-                x[lut[3]] = (b_2 - b_3) * mul;
-            }
-        }
-        
-        // Scalar remainder
-        for (auto i = 0; i < N; i += 8) {
-            auto lut = lut_ptr + i;
-            auto sf2 = &df[i];
-            
-            auto b_0 = sf2[0] + sf2[2];
-            auto b_2 = sf2[0] - sf2[2];
-            auto b_1 = sf2[1] * c2;
-            auto b_3 = sf2[3] * c2;
-            
-            x[lut[0]] = (b_0 + b_1) * mul;
-            x[lut[1]] = (b_0 - b_1) * mul;
-            x[lut[2]] = (b_2 + b_3) * mul;
-            x[lut[3]] = (b_2 - b_3) * mul;
-            
-            b_0 = sf2[4] + sf2[6];
-            b_2 = sf2[4] - sf2[6];
-            b_1 = sf2[5] * c2;
-            b_3 = sf2[7] * c2;
-            
-            x[lut[4]] = (b_0 + b_1) * mul;
-            x[lut[5]] = (b_0 - b_1) * mul;
-            x[lut[6]] = (b_2 + b_3) * mul;
-            x[lut[7]] = (b_2 - b_3) * mul;
-        }
-    }
-    else if (nbr_bits == 2) {
-        // 4-point IFFT
-        const double b_0 = f[0] + f[2];
-        const double b_2 = f[0] - f[2];
-        x[0] = (b_0 + f[1] * c2) * mul;
-        x[2] = (b_0 - f[1] * c2) * mul;
-        x[1] = (b_2 + f[3] * c2) * mul;
-        x[3] = (b_2 - f[3] * c2) * mul;
-    }
-    else if (nbr_bits == 1) {
-        // 2-point IFFT
-        x[0] = (f[0] + f[1]) * mul;
-        x[1] = (f[0] - f[1]) * mul;
-    }
-    else {
-        // 1-point IFFT
-        x[0] = f[0] * mul;
-    }
-    // Restore the negated imaginary parts
-   //  for (int i = N/2 + 1; i < N; i++) { f[i] = -f[i]; }
+inline void do_fft_simd_f1_impl(const float* x, float* f, int N, int nbr_bits, const int* bit_rev_lut, float* buffer_ptr, void* twiddle_cache_ptr) {
+    fr_fft<float>(x, f, N, nbr_bits, bit_rev_lut, buffer_ptr, static_cast<const FFTReal_O<float>::TwiddleCache*>(twiddle_cache_ptr));
+}
+inline void do_fft_simd_d1_impl(const double* x, double* f, int N, int nbr_bits, const int* bit_rev_lut, double* buffer_ptr, void* twiddle_cache_ptr) {
+    fr_fft<double>(x, f, N, nbr_bits, bit_rev_lut, buffer_ptr, static_cast<const FFTReal_O<double>::TwiddleCache*>(twiddle_cache_ptr));
+}
+inline void do_ifft_simd_f1_impl(float* _Nonnull f, float* _Nonnull x, int N, int nbr_bits, const int* _Nonnull bit_rev_lut,
+                                 float* _Nonnull buffer_ptr, void* _Nonnull twiddle_cache_ptr, bool do_scale) {
+    fr_ifft<float>(f, x, N, nbr_bits, bit_rev_lut, buffer_ptr, static_cast<const FFTReal_O<float>::TwiddleCache*>(twiddle_cache_ptr), do_scale);
+}
+inline void do_ifft_simd_d1_impl(double* _Nonnull f, double* _Nonnull x, int N, int nbr_bits, const int* _Nonnull bit_rev_lut,
+                                 double* _Nonnull buffer_ptr, void* _Nonnull twiddle_cache_ptr, bool do_scale) {
+    fr_ifft<double>(f, x, N, nbr_bits, bit_rev_lut, buffer_ptr, static_cast<const FFTReal_O<double>::TwiddleCache*>(twiddle_cache_ptr), do_scale);
 }
 
 } // namespace fft_simd_helpers
