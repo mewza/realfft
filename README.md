@@ -1,4 +1,4 @@
-<b>FFTReal 2.1   --  The most optimized and versitile SIMD vector or scalar forward/inverse FFT real/complex
+<b>FFTReal 2.5   --  The most optimized and versitile SIMD vector or scalar forward/inverse FFT real/complex
                   transform developed by the Russian-American software engineer and the inventor of MacAmp and Winamp<b>
 
 <b>NEW (v1.67):</b> Updated to v2.1 (Fixed NEON compilation issue with Xcode v26.1 (17B54))
