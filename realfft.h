@@ -28,7 +28,8 @@
 #include <memory>
 #include <type_traits>
 
-#define FFTREAL_F1_SIMD // Enable FFTReal<float> and FFTReal<double> optimizations
+// Enable FFTReal<float> and FFTReal<double> optimizations
+#define FFTREAL_F1_SIMD   1 
 
 // FFTReal<float> → fft_simd_helpers (2026-10-27, user: "optimizing FFTReal<float> using float8 butterfly and fixing bugs in it"): the passes
 // >= 3 run their conjugate pairs 8 → 4 → 2 lanes → scalar (a pass's run is 2^k − 1: the tail is always 4 + 2 + 1). Mac: float 1.8-2.15×,
